@@ -220,7 +220,8 @@ extern "C" Result vulkan_release_dispatch(Handle *handle)
 FARPROC WINAPI get_proc_address_dispatch(HMODULE module, LPCSTR name)
 {
     FARPROC target = original_get_proc_address(module, name);
-    if (!name || !target) return target;
+    // GetProcAddress also accepts a 16-bit export ordinal, not a string pointer.
+    if (IS_INTRESOURCE(name) || !target) return target;
     const auto is = [name](const char *wanted) { size_t i = 0; while (name[i] && wanted[i] && name[i] == wanted[i]) ++i; return name[i] == wanted[i]; };
     if (is("NVSDK_NGX_VULKAN_Init_ProjectID")) { original_init = reinterpret_cast<InitProject>(target); return reinterpret_cast<FARPROC>(&vulkan_init_dispatch); }
     if (is("NVSDK_NGX_VULKAN_CreateFeature1")) { original_create = reinterpret_cast<Create>(target); return reinterpret_cast<FARPROC>(&vulkan_create_dispatch); }

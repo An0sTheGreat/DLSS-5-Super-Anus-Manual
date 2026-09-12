@@ -72,5 +72,6 @@ python "%ROOT%tools\patch_v6_addon.py" --base "%ROOT%updated-official-renodx-dls
  --section-name .nr-dx11 --screenshot-capture --output "%NR_OUTPUT%" || exit /b 1
 python "%ROOT%tools\validate_v6_addon.py" --base "%ROOT%updated-official-renodx-dlss.addon64" ^
  --addon "%NR_OUTPUT%" --version V6.6 --experimental-dx11 --screenshot-capture %NR_VALIDATION_FLAGS% || exit /b 1
+if /i "%~1"=="vulkan" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 copy /y "%ROOT%build\minhook-api\LICENSE.txt" "%ROOT%build\dx11-experimental-minhook-LICENSE.txt" >nul || exit /b 1
 endlocal

@@ -1,4 +1,25 @@
-# FrameGen upstream routing — v1.0.3 candidate 1
+# FrameGen upstream routing — v1.0.3 candidates
+
+## Candidate 2: export-ordinal startup crash
+
+Build `1.0.3-framegen-upstream.2` fixes the process-wide Vulkan discovery hook's
+handling of `GetProcAddress` ordinal requests. Candidate 1 dereferenced a numeric
+export ID as a string. KCD2 crash reports at 22:43 and 22:44 on September 11
+identify the installed candidate-1 add-on at RVA `0x29D007`, the first byte read
+from the export-name argument. Its installed SHA-256 was
+`2969EF62FD26DC122B154F4E76FD7195F04A5185086808559A552E913B2D3DFA`.
+
+The shared interceptor now returns the original lookup result for all ordinal
+requests before inspecting any string. Named Vulkan interception and the NR
+routing below are unchanged. This applies in DX11/DX12 games too because the
+discovery hook intercepts process-wide export lookups.
+
+`scripts/test/test-vulkan-export-lookup.cmd` invokes the actual production
+interceptor. Before the fix, ordinal 2 reproduced `0xC0000005`; after the fix,
+all 65,536 ordinal values pass, alongside missing exports, ordinary/DX12 names,
+all five Vulkan wrappers, and a real Windows named lookup. The full Vulkan
+release build now runs this check. This validates the reproduced crash path;
+it does not establish real-game Dawnwalker multipass stability.
 
 ## Problem
 
