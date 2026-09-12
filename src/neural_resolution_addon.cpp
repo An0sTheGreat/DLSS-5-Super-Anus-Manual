@@ -1157,7 +1157,7 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
 #ifdef NR_EXPERIMENTAL_VULKAN
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 experimental Vulkan native post-DLSS NR (100%, one pass).";
+    "V6.6 1.0.3-multipass-lifecycle.1 with experimental Vulkan native post-DLSS NR.";
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 test 1.0.3-dawnwalker-no-copyback.2: later FrameGen pass copyback suppressed.";
@@ -1205,7 +1205,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         }
         log_message(reshade::log::level::info,
 #ifdef NR_EXPERIMENTAL_VULKAN
-            "NR BUILD ID: 1.0.3-vulkan-native.1 module=%s config-schema=7.",
+            "NR BUILD ID: 1.0.3-multipass-lifecycle.1 module=%s config-schema=7.",
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
             "NR BUILD ID: 1.0.3-dawnwalker-no-copyback.2 module=%s config-schema=7.",
 #else
