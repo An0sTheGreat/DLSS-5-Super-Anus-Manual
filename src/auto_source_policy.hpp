@@ -17,6 +17,14 @@ class AutoSourcePolicy {
     }
 public:
     bool fallback() const { return (state_.load() & fallback_bit) != 0; }
+    bool force_native() {
+        auto old = state_.load();
+        do {
+            if (old & fallback_bit) return true;
+            if (old & active_mask) return false;
+        } while (!state_.compare_exchange_weak(old,old | fallback_bit));
+        return true;
+    }
     bool enter_other(std::uint64_t frame) {
         auto old = state_.load();
         do {

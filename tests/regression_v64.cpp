@@ -15,6 +15,14 @@ int main()
     for (int retry = 0; retry < 2; ++retry)
         assert(permit_native_evaluation(allowed != 0, enabled != 0, loaded != 0,
             static_cast<std::uint8_t>(source), retry != 0) == (allowed != 0));
+    for (unsigned cycle = 0; cycle < 10000; ++cycle)
+    {
+        assert(use_native_sr_source(2,cycle&1));
+        assert(use_native_sr_source(3,true));
+        assert(!use_native_sr_source(3,false));
+        assert(!use_native_sr_source(1,true));
+        assert(!use_native_sr_source(4,true));
+    }
 
     RecordingReferences recording;
     recording.sets = 3;
@@ -137,5 +145,5 @@ int main()
         used -= allocation;
         assert(used == 0);
     }
-    std::puts("V6.4: gate, recording pins, budget, independent queue fences, native-slot bounds and 10,000 policy cycles passed (simulation, not game GPU testing).");
+    std::puts("V6.4: upstream FrameGen routing, gate, recording pins, budget, independent queue fences, native-slot bounds and 10,000 policy cycles passed (simulation, not game GPU testing).");
 }

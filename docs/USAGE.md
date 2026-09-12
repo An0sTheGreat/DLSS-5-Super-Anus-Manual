@@ -44,9 +44,12 @@ resource capacity, the current configuration remains on the native 100% path
 until resolution, pass count, preset, or hook method changes. This deliberate
 stable fallback avoids alternating scaled/native frames.
 
-Manual hook modes at applied 100% keep the first upstream FrameGen evaluation
-untouched; later configured NR passes receive zero motion vectors.
-Scaled FrameGen and Auto routing remain game-dependent and experimental.
+FrameGen hook selections run NR once per real source frame on the native Super
+Resolution output. The add-on does not run NR, record GPU work, or change
+resources inside FrameGen callbacks. This keeps vendor Frame Generation timing
+and parameters untouched while allowing resolution scaling and multipass NR.
+Pass 1 receives the game's motion vectors; pass 2 and later receive explicit
+zero motion vectors because no new game-frame movement occurred between passes.
 
 Values above 100% increase internal NR detail and cost without changing the
 game's output resolution or DLSS Super Resolution setting. They can consume

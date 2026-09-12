@@ -3,6 +3,16 @@
 #include <thread>
 #include <cstdio>
 int main() {
+    nr::AutoSourcePolicy forced;
+    assert(forced.force_native());
+    assert(forced.fallback());
+    assert(forced.force_native());
+    assert(!forced.enter_other(1));
+    nr::AutoSourcePolicy active;
+    assert(active.enter_other(1));
+    assert(!active.force_native());
+    active.leave_other(1,false);
+    assert(active.force_native());
     nr::AutoSourcePolicy p;
     assert(!p.select_native(1,100));
     assert(p.enter_other(2));
@@ -31,5 +41,5 @@ int main() {
         go=true; fg.join(); sr.join();
         assert(!(entered && selected));
     }
-    puts("Auto source: startup, timeout, successful-work grace, nested/in-flight protection, same/backwards frames, sticky fallback and 2000 FG/native races passed.");
+    puts("Auto source: immediate FrameGen transfer, timeout fallback, nested/in-flight protection, sticky ownership and 2000 races passed.");
 }

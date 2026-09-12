@@ -1157,13 +1157,13 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
 #ifdef NR_EXPERIMENTAL_VULKAN
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 1.0.3-multipass-lifecycle.1 with experimental Vulkan native post-DLSS NR.";
+    "V6.6 1.0.3-framegen-upstream.1 with experimental Vulkan native post-DLSS NR.";
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 test 1.0.3-dawnwalker-no-copyback.2: later FrameGen pass copyback suppressed.";
 #else
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 1.0.3-multipass-lifecycle.1: fence-recycled multipass working textures.";
+    "V6.6 1.0.3-framegen-upstream.1: FrameGen-safe upstream multipass routing.";
 #endif
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
@@ -1205,11 +1205,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         }
         log_message(reshade::log::level::info,
 #ifdef NR_EXPERIMENTAL_VULKAN
-            "NR BUILD ID: 1.0.3-multipass-lifecycle.1 module=%s config-schema=7.",
+            "NR BUILD ID: 1.0.3-framegen-upstream.1 module=%s config-schema=7.",
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
             "NR BUILD ID: 1.0.3-dawnwalker-no-copyback.2 module=%s config-schema=7.",
 #else
-            "NR BUILD ID: 1.0.3-multipass-lifecycle.1 module=%s config-schema=7.",
+            "NR BUILD ID: 1.0.3-framegen-upstream.1 module=%s config-schema=7.",
 #endif
             module_path[0] != 0 ? module_path : "<unknown>");
         if (!canonical)
@@ -1237,12 +1237,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             "NR COST SCALER 2: 25-150% internal NR scaling, native 100% bypass, matched residual/direct, fence-retired native anchors.");
         log_text(reshade::log::level::info,
             "NR RESOURCE POOL 2: shared device/pass history, transactional pass reservations, adaptive in-flight cap and fence-safe source rebinding enabled.");
-        if (g_framegen_transition_tls == TLS_OUT_OF_INDEXES)
-            log_text(reshade::log::level::warning,
-                "NR FRAMEGEN SCALE ROUTE 1: Windows TLS allocation failed; manual FrameGen scaling retains the native fallback path.");
-        else
-            log_text(reshade::log::level::info,
-                "NR FRAMEGEN SCALE ROUTE 1: callback-scoped transition frames enabled; scaled NR preserves the selected hook's native color encoding.");
+        log_text(reshade::log::level::info,
+            "NR FG UPSTREAM 1: FrameGen callbacks are observation-only; NR runs once per source frame on the native SR output.");
         load_control_keys();
         int configured_sharpness = 35;
         // Migrate even saved V6.3=true configurations away from unsafe replay.
@@ -1303,13 +1299,13 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         log_text(reshade::log::level::info,
             "NR UI REVISION 4: Reconstruction Sharpness disabled at applied resolution 100%; saved sharpness retained.");
         log_text(reshade::log::level::info,
-            "NR CAPTURE TEST 3: scoped no-codec capture; rebindable F6 toggle, F7 presets, F5 NR pair, pass +/-; PNG only. Capture behavior retained; Auto recovery reported separately.");
+            "NR CAPTURE TEST 3: scoped no-codec capture; rebindable F6 toggle, F7 presets, F5 NR pair, pass +/-; PNG only.");
         log_text(reshade::log::level::info,
             "NR PASS TEST 1: bounded unpinned command-list recycling and live NR re-registration; all five frame-gate sites observed without replay. Waiting root cause is not yet confirmed.");
         log_message(reshade::log::level::info,
-            "NR FG ROUTE 5: source-frame/MFG-index context enabled; native manual hooks remain transparent; detailed probes require an explicit frame trace.");
+            "NR FG ROUTE 6: manual and Auto FrameGen selections use the upstream native-SR frame gate; vendor callbacks remain free of NR GPU work.");
         log_message(reshade::log::level::info,
-            "NR AUTO RECOVERY 3: guarded native SR fallback after 750 ms without successful FrameGen NR; sticky in Auto for this process; original native gate and manual hooks preserved.");
+            "NR AUTO RECOVERY 4: FrameGen selects native SR immediately; other Auto routes are suppressed after ownership transfers.");
 #ifdef NR_EXPERIMENTAL_VULKAN
         vulkan_native::start_discovery();
         log_text(reshade::log::level::warning,

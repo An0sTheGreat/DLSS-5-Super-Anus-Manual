@@ -124,7 +124,8 @@ def main() -> None:
             "ReleaseSRWLockExclusive"} <= imports["KERNEL32.DLL"]
     if args.screenshot_capture:
         assert b'NR PASS TEST 1:' in bytes(addon.data)
-        assert b'NR AUTO RECOVERY 3:' in bytes(addon.data)
+        assert b'NR FG UPSTREAM 1:' in bytes(addon.data)
+        assert b'NR AUTO RECOVERY 4:' in bytes(addon.data)
         assert 0x09C776 in CAPTURE_PATCHES
         # Keep the original source predicate/branch and native gate body intact.
         for start, size in ((0x09C77D,10),(0x0B1F40,32)):

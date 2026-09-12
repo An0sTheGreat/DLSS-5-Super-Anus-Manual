@@ -32,9 +32,6 @@ int main(int argc,char **argv) {
     char initial_scale_value[8]={};
     const unsigned initial_scale=GetEnvironmentVariableA("NR_TEST_INITIAL_SCALE",initial_scale_value,sizeof(initial_scale_value)) ?
         static_cast<unsigned>(std::strtoul(initial_scale_value,nullptr,10)) : 0;
-    char forced_context_value[8]={};
-    const bool forced_context=GetEnvironmentVariableA(
-        "NR_TEST_FORCED_FG_CONTEXT",forced_context_value,sizeof(forced_context_value))!=0;
     WNDCLASSW cls={}; cls.lpfnWndProc=DefWindowProcW; cls.hInstance=GetModuleHandleW(nullptr); cls.lpszClassName=L"NRFrameGenFixture";
     RegisterClassW(&cls);
     auto window=CreateWindowW(cls.lpszClassName,L"NR FrameGen callback test",WS_OVERLAPPEDWINDOW,100,100,360,240,nullptr,nullptr,cls.hInstance,nullptr);
@@ -123,6 +120,8 @@ int main(int argc,char **argv) {
                 *reinterpret_cast<float *>(base+0x270FB0)=manual_fg?3.f:manual_sr?2.f:1.f;
                 base[0x27100E]=(frame>=200 && frame<220)?0:1;
                 if (*reinterpret_cast<int *>(base+0x2677F8)!=0) base[0x27100F]=manual_sr?2:3;
+                if (manual_fg) *reinterpret_cast<unsigned *>(base+0x266FA4)=2;
+                else if (frame==310) *reinterpret_cast<unsigned *>(base+0x266FA4)=1;
                 if (!sr_handle) {
                     NVSDK_NGX_DLSS_Create_Params create={};
                     create.Feature.InWidth=create.Feature.InTargetWidth=1920;
@@ -131,6 +130,7 @@ int main(int argc,char **argv) {
                     create.InFeatureCreateFlags=NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
                     ngx(NGX_D3D12_CREATE_DLSS_EXT(list,1,1,&sr_handle,sr_parameters,&create));
                 }
+                const auto before_fg_route=fg_scaled->load();
                 NVSDK_NGX_D3D12_DLSS_Eval_Params eval={};
                 eval.Feature.pInColor=resources[0]; eval.Feature.pInOutput=sr_output;
                 eval.pInDepth=resources[2]; eval.pInMotionVectors=resources[1];
@@ -138,23 +138,36 @@ int main(int argc,char **argv) {
                 ngx(NGX_D3D12_EVALUATE_DLSS_EXT(list,sr_handle,sr_parameters,&eval));
                 const auto native_delta=success->load()-before;
                 native_recovered+=native_delta;
-                if (frame<40 && native_delta!=0) { puts("FAIL: native NR duplicated healthy FG ownership"); return 10; }
                 if (frame>=180) {
                     const auto enabled=*reinterpret_cast<int *>(base+0x2677F8)!=0;
-                    const auto expected=enabled && !manual_fg ? *reinterpret_cast<unsigned *>(base+0x266FA4) : 0;
+                    const auto expected=enabled ? *reinterpret_cast<unsigned *>(base+0x266FA4) : 0;
                     if (native_delta!=expected) { printf("FAIL: frame %u native passes %u expected %u\n",frame,native_delta,expected); return 11; }
                 }
-                // Healthy initial producer, then missing FG work, then late
-                // return. Also exercise explicit manual FrameGen and Upscaled.
+                if (manual_fg) manual_fg_scaled+=fg_scaled->load()-before_fg_route;
+                // FrameGen callbacks remain NR-free. The 20-frame manual window
+                // issues 10,000 callbacks while two-pass/scale transitions run
+                // on the upstream native-SR path.
                 if (frame<40 || frame>=180) {
                     const auto after_native=success->load();
-                    const auto before_fg_scaled=fg_scaled->load();
-                    callback(list,0x12345678,parameters);
+                    const unsigned repeats=manual_fg?500u:1u;
+                    for (unsigned repeat=0;repeat<repeats;++repeat) {
+                        const unsigned index=repeat%4+1;
+                        parameters->Set("DLSSG.MultiFrameIndex",index);
+                        if ((callback(list,0x12345678,parameters)&255)!=1 || success->load()!=after_native)
+                            { puts("FAIL: FrameGen callback performed NR work"); return 12; }
+                        ID3D12Resource *color=nullptr,*motion=nullptr,*depth=nullptr;
+                        unsigned actual_index=0;
+                        parameters->Get("DLSSG.Backbuffer",&color);
+                        parameters->Get("DLSSG.MVecs",&motion);
+                        parameters->Get("DLSSG.Depth",&depth);
+                        parameters->Get("DLSSG.MultiFrameIndex",&actual_index);
+                        if (color!=resources[0] || motion!=resources[1] || depth!=resources[2] || actual_index!=index)
+                            { puts("FAIL: FrameGen callback changed vendor parameters"); return 13; }
+                    }
                     const auto extra=success->load()-after_native;
                     if (frame<40) healthy_fg_evals+=extra;
                     else if (manual_fg) {
                         manual_fg_evals+=extra;
-                        manual_fg_scaled+=fg_scaled->load()-before_fg_scaled;
                     }
                     else late_fg_evals+=extra;
                 }
@@ -191,11 +204,11 @@ int main(int argc,char **argv) {
     const unsigned long long bypass_total=counters_initialized ? reinterpret_cast<std::atomic_ullong *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_FG_BYPASS_RVA"))->load()-bypass_begin : 0;
     const unsigned prewarm_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_PREWARM_RVA"))->load()-prewarm_begin : 0;
     const unsigned retired_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_RETIRED_RVA"))->load()-retired_begin : 0;
-    printf("Scale routing: scaled=%u FrameGen-scaled=%u transition-native=%u transparent-native=%llu.\n",scaled_total,fg_scaled_total,transition_total,bypass_total);
+    printf("Scale routing: scaled=%u FrameGen-upstream=%u transition-native=%u FrameGen-bypassed=%llu.\n",scaled_total,fg_scaled_total,transition_total,bypass_total);
     printf("Resource churn: prewarmed=%u retired=%u.\n",prewarm_total,retired_total);
     if (mfg_cadence) printf("MFG cadence callbacks: index1=%u index2=%u index3=%u index4=%u.\n",
         mfg_callbacks[1],mfg_callbacks[2],mfg_callbacks[3],mfg_callbacks[4]);
-    if (recovery) printf("Auto recovery: native NR=%u healthy FG NR=%u late FG NR=%u explicit manual FG NR=%u scaled=%u\n",native_recovered,healthy_fg_evals,late_fg_evals,manual_fg_evals,manual_fg_scaled);
+    if (recovery) printf("Upstream routing: native NR=%u healthy FG callback NR=%u late FG callback NR=%u manual FG callback NR=%u redirected=%u\n",native_recovered,healthy_fg_evals,late_fg_evals,manual_fg_evals,manual_fg_scaled);
     if (sr_handle) ngx(NVSDK_NGX_D3D12_ReleaseFeature(sr_handle));
     if (sr_parameters) ngx(NVSDK_NGX_D3D12_DestroyParameters(sr_parameters));
     ngx(NVSDK_NGX_D3D12_DestroyParameters(parameters)); ngx(NVSDK_NGX_D3D12_Shutdown1(device));
@@ -206,9 +219,8 @@ int main(int argc,char **argv) {
     const bool scale_ok=!scale_churn || (scaled_total>0 && fg_scaled_total>0 && transition_total>0);
     const bool native_transparent_ok=recovery || scale_churn || bypass_total>=370;
     const bool scaled_activity_ok=!scale_churn || evaluated>0;
-    const bool manual_route_ok=!recovery || (forced_context ? manual_fg_scaled>0 :
-        (scale_churn ? manual_fg_scaled>0 : (manual_fg_scaled==0 && bypass_total>0)));
-    const bool recovery_ok=!recovery || (native_recovered>=370 && healthy_fg_evals>0 && late_fg_evals==0 && manual_route_ok);
+    const bool manual_route_ok=!recovery || (manual_fg_scaled>0 && manual_fg_evals==0 && bypass_total>=10000);
+    const bool recovery_ok=!recovery || (native_recovered>=370 && healthy_fg_evals==0 && late_fg_evals==0 && manual_route_ok);
     const bool cadence_ok=!mfg_cadence || (mfg_callbacks[1]&&mfg_callbacks[2]&&mfg_callbacks[3]&&mfg_callbacks[4]);
     return native_transparent_ok && scaled_activity_ok && scale_ok && recovery_ok && cadence_ok ? 0 : 9;
 }
