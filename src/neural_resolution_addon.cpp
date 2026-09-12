@@ -1157,13 +1157,13 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
 #ifdef NR_EXPERIMENTAL_VULKAN
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 1.0.3-framegen-upstream.2 with ordinal-safe Vulkan export lookup.";
+    "V6.6 1.0.3-framegen-upstream.3 with stable scale admission and ordinal-safe Vulkan lookup.";
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 test 1.0.3-dawnwalker-no-copyback.2: later FrameGen pass copyback suppressed.";
 #else
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 1.0.3-framegen-upstream.2: upstream multipass routing.";
+    "V6.6 1.0.3-framegen-upstream.3: upstream multipass routing and stable scale admission.";
 #endif
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
@@ -1205,11 +1205,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         }
         log_message(reshade::log::level::info,
 #ifdef NR_EXPERIMENTAL_VULKAN
-            "NR BUILD ID: 1.0.3-framegen-upstream.2 module=%s config-schema=7.",
+            "NR BUILD ID: 1.0.3-framegen-upstream.3 module=%s config-schema=7.",
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
             "NR BUILD ID: 1.0.3-dawnwalker-no-copyback.2 module=%s config-schema=7.",
 #else
-            "NR BUILD ID: 1.0.3-framegen-upstream.2 module=%s config-schema=7.",
+            "NR BUILD ID: 1.0.3-framegen-upstream.3 module=%s config-schema=7.",
 #endif
             module_path[0] != 0 ? module_path : "<unknown>");
         if (!canonical)

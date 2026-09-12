@@ -186,6 +186,42 @@ int main()
     g_resource_sets = {};
     puts("Stream transition and fence-safe working-texture pooling passed.");
 
+    // A full working cache can still have reusable capacity: admission must
+    // collect completed fences before counting slots. Never count a busy or
+    // merely signaled set as reusable. Allocation sizes are synthetic; fences
+    // and the collector are real, and no game resources are touched.
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        auto &set = g_resource_sets[i];
+        set.active = set.valid = set.retiring = true;
+        set.device = reinterpret_cast<reshade::api::device *>(1);
+        set.allocation_generation = 1;
+        set.allocated_bytes = nr::maximum_working_cache / 2;
+        set.queue_mask = 1;
+        set.retire_fences[0] = ++g_tracked_queues[0].serial;
+    }
+    const auto available = [] {
+        unsigned count = 0;
+        for (const auto &set : g_resource_sets)
+            if (set.active && nr::prewarm_slot_available(set.pooled, set.retiring, false)) ++count;
+        return count;
+    };
+    ID3D12Fence *admission_block = nullptr;
+    assert(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&admission_block))));
+    assert(SUCCEEDED(queues[0]->Wait(admission_block, 1)));
+    assert(SUCCEEDED(queues[0]->Signal(fences[0], g_tracked_queues[0].serial)));
+    collect_resources_locked(2100);
+    assert(available() == 0);
+    assert(SUCCEEDED(admission_block->Signal(1)));
+    complete_fence(fences[0], g_tracked_queues[0].serial);
+    collect_resources_locked(2101);
+    assert(available() == 2 && g_cached_mib == 512);
+    admission_block->Release();
+    // Both passes now fit through reuse, even though another allocation cannot.
+    assert(!allocation_fits(nr::maximum_working_cache, 1, nr::maximum_working_cache));
+    g_resource_sets = {};
+    puts("Prewarm capacity: full cache, unfinished fence rejection and completed-fence reuse passed.");
+
     auto feature = [](std::uintptr_t id) {
         ResourceSet set;
         set.active = set.valid = set.native_feature = true;

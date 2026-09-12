@@ -1420,27 +1420,20 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     bool group_pressure = false;
     if (working_pass == 0 && working_pass_count > 1)
     {
+        // Complete pending fence retirement BEFORE counting reusable capacity.
+        // Otherwise a full cache can reject the group without ever reaching
+        // the allocator's collector; only the 250 ms maintenance tick recovers it.
+        collect_resources_locked(GetTickCount64());
         const auto color_format = writable_format(color_desc.texture.format);
         const auto output_format = writable_format(output_desc.texture.format);
         const auto motion_format = writable_format(motion_desc.texture.format);
         const auto depth_format = writable_format(depth_desc.texture.format);
         const auto ui_format = ui.handle ? writable_format(ui_desc.texture.format) : reshade::api::format::unknown;
         const auto ui_alpha_format = ui_alpha.handle ? writable_format(ui_alpha_desc.texture.format) : reshade::api::format::unknown;
-        std::uint64_t one_set = texture_allocation_size(device,display_width,display_height,color_format);
-        bool size_valid = one_set != 0 && one_set != UINT64_MAX;
-        for (const auto format : {color_format,output_format,motion_format,depth_format,ui_format,ui_alpha_format})
-            if (format != reshade::api::format::unknown)
-            {
-                const auto bytes = texture_allocation_size(device,work_width,work_height,format);
-                if (bytes == UINT64_MAX || one_set > UINT64_MAX - bytes) size_valid = false;
-                else one_set += bytes;
-            }
-        std::uint64_t used = 0;
         unsigned compatible = 0;
         for (const auto &candidate : g_resource_sets)
         {
             if (!candidate.active) continue;
-            used += candidate.allocated_bytes;
             if (!candidate.capture && !candidate.native_feature && candidate.valid &&
                 candidate.device == device && candidate.allocation_generation == allocation_generation &&
                 candidate.display_width == display_width && candidate.display_height == display_height &&
@@ -1455,28 +1448,19 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
                 ++compatible;
         }
         const unsigned missing = working_pass_count > compatible ? working_pass_count - compatible : 0;
-        if (missing != 0 && size_valid && one_set <= UINT64_MAX / missing)
+        // The allocator owns admission, including eviction of incompatible
+        // fence-safe pooled shapes. No scaled GPU work starts until all pass
+        // slots exist; a partial prewarm remains safely pooled on failure.
+        for (unsigned i = 0; i < missing; ++i)
         {
-            std::uint64_t usage = 0, budget = 0;
-            const auto admission = query_local_memory(device,usage,budget) ?
-                nr::adaptive_memory_admission(used,usage,budget,working_pass_count) : nr::MemoryAdmission{};
-            const auto cache_limit = admission.queried ? admission.cache_limit : kWorkingTextureBudget;
-            g_adaptive_cache_limit.store(cache_limit,std::memory_order_relaxed);
-            group_pressure = !allocation_fits(used,one_set*missing,cache_limit);
+            auto *reserved = find_or_create_resource_set(
+                device, color, output, motion, depth, ui, ui_alpha,
+                color_desc, output_desc, motion_desc, depth_desc, ui_desc, ui_alpha_desc,
+                display_width, display_height, work_width, work_height, true);
+            if (reserved == nullptr) { group_pressure = true; break; }
+            pool_resource_set(*reserved, GetTickCount64());
+            g_prewarmed_sets.fetch_add(1, std::memory_order_relaxed);
         }
-        else if (missing != 0)
-            group_pressure = true;
-        if (!group_pressure)
-            for (unsigned i = 0; i < missing; ++i)
-            {
-                auto *reserved = find_or_create_resource_set(
-                    device, color, output, motion, depth, ui, ui_alpha,
-                    color_desc, output_desc, motion_desc, depth_desc, ui_desc, ui_alpha_desc,
-                    display_width, display_height, work_width, work_height, true);
-                if (reserved == nullptr) { group_pressure = true; break; }
-                pool_resource_set(*reserved, GetTickCount64());
-                g_prewarmed_sets.fetch_add(1, std::memory_order_relaxed);
-            }
     }
     const bool native_group = g_multipass_groups.use_native(
         generation, group_token, working_pass, working_pass_count, group_pressure);
@@ -1486,7 +1470,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         {
             g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
             log_fallback_once(generation,
-                "the complete multipass group could not be reserved; this frame group stays native while resources retire");
+                "the complete multipass group could not be reserved after fence collection; holding 100% until resolution, pass count, preset or hook changes");
         }
         g_memory_native_groups.fetch_add(evaluation_pass == 0 ? 1u : 0u, std::memory_order_relaxed);
         g_effective_scale.store(100, std::memory_order_relaxed);
@@ -1516,11 +1500,11 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         display_width, display_height, work_width, work_height);
     if (set == nullptr)
     {
-        g_multipass_groups.allocation_failed(generation, group_token, evaluation_pass != 0);
+        g_multipass_groups.allocation_failed(generation, group_token);
         if (evaluation_pass == 0)
         {
             g_memory_native_groups.fetch_add(1, std::memory_order_relaxed);
-            return native_fallback("compatible working textures could not be created or the cache is full");
+            return native_fallback("working-texture admission failed; holding 100% until settings change");
         }
         g_partial_group_suppressed.fetch_add(1, std::memory_order_relaxed);
         g_effective_scale.store(100, std::memory_order_relaxed);
@@ -1650,7 +1634,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     {
         cmd_list->barrier(set->native_color, reshade::api::resource_usage::shader_resource_non_pixel,
             reshade::api::resource_usage::unordered_access);
-        g_multipass_groups.allocation_failed(generation, group_token, evaluation_pass != 0);
+        g_multipass_groups.allocation_failed(generation, group_token);
         if (evaluation_pass != 0)
         {
             g_partial_group_suppressed.fetch_add(1, std::memory_order_relaxed);

@@ -73,12 +73,12 @@ int main()
     nr::MultipassGroupPolicy groups;
     assert(!groups.use_native(1,100,0,3,false));
     assert(!groups.use_native(1,100,1,3,false));
-    groups.allocation_failed(1,100,false);
+    groups.allocation_failed(1,100);
     assert(groups.use_native(1,100,2,3,false));
-    assert(!groups.blocked(1));
-    assert(!groups.use_native(1,101,0,3,false)); // Retry after transient first-pass pressure.
-    groups.allocation_failed(1,101,true);
-    assert(groups.blocked(1)); // A later-pass failure still protects the configuration.
+    assert(groups.blocked(1));
+    assert(groups.use_native(1,101,0,3,false));
+    groups.allocation_failed(1,101);
+    assert(groups.blocked(1));
     assert(groups.use_native(1,102,0,3,false));
     groups.reset();
     assert(!groups.blocked(1));
@@ -92,10 +92,35 @@ int main()
     for (unsigned pass=1;pass<10;++pass)
         assert(groups.use_native(2,200,pass,10,false));
     assert(groups.complete());
-    assert(!groups.blocked(2));
-    assert(!groups.use_native(2,201,0,10,false));
+    assert(groups.blocked(2));
+    assert(groups.use_native(2,201,0,10,false));
     groups.reset();
     assert(!groups.use_native(3,202,0,10,false));
+
+    // Dawnwalker: capacity recovers after a few native frames. That must not
+    // alternate native/scaled feature dimensions within the same configuration.
+    for (int scale : {70, 110})
+    {
+        groups.reset();
+        for (unsigned frame = 1; frame <= 10000; ++frame)
+            for (unsigned pass = 0; pass < 2; ++pass)
+                assert(!groups.use_native(scale, frame, pass, 2, false));
+        groups.reset();
+        unsigned switches = 0;
+        bool previous_native = false;
+        for (unsigned frame = 1; frame <= 10000; ++frame)
+        {
+            const bool pressure = frame % 8 == 0;
+            const bool native = groups.use_native(scale, frame, 0, 2, pressure);
+            switches += native != previous_native;
+            previous_native = native;
+            assert(groups.use_native(scale, frame, 1, 2, false) == native);
+            assert(native == (frame >= 8));
+        }
+        assert(switches == 1);
+        assert(!groups.use_native(scale + 1, 10001, 0, 2, false));
+        assert(!groups.use_native(scale + 1, 10001, 1, 2, false));
+    }
 
     assert(nr::maximum_working_sets(1) == 4);
     assert(nr::maximum_working_sets(2) == 6);

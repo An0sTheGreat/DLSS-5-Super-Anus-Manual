@@ -1,5 +1,37 @@
 # FrameGen upstream routing — v1.0.3 candidates
 
+## Candidate 3: stable scaled multipass admission
+
+Build `1.0.3-framegen-upstream.3` addresses the scaled/native oscillation in
+Dawnwalker's September 11 log. At 70% and 110%, successful scaled evaluations
+were followed by multipass reservation failures and repeated feature-dimension
+changes between the requested resolution and 3440x1440. The user confirmed
+candidate 2's multipass now works, and reported KCD2 working without flicker
+above or below 100%; these are user reports, not automated game acceptance.
+
+- Collect completed queue fences before counting reusable prewarm slots.
+- Use the existing allocator's budget and safe eviction logic instead of a
+  duplicate prewarm budget check that could reject before collection/eviction.
+- If admission still fails, hold native 100% for that configuration rather than
+  retrying and switching resolution every few frames. A resolution, pass-count,
+  preset or hook change permits a new attempt.
+- Keep the 512 MiB ceiling, adaptive headroom, command-list references, queue
+  fences, motion-vector behavior and candidate 2's routing/startup fix intact.
+
+This is not a promise that every resolution/pass combination fits the cache.
+Native fallback retains NR but does not deliver the requested scaled resolution.
+No game-specific exceptions or relaxed resource lifetime rules were added.
+
+Verification: the new policy regression failed against the previous policy and
+passes now. Two 10,000-frame pressure-free cases remain scaled; periodic-pressure
+cases switch to native once and recover after a configuration change. A real
+WARP queue-fence test rejects unfinished work and recovers two reusable slots
+from a full 512 MiB synthetic cache. Existing lifetime, UI and scale-history
+checks pass. The isolated GPU fixture completed 579 NR evaluations, including
+501 scaled calls, across scale/pass/preset/hook changes with zero NR evaluations
+inside FrameGen callbacks and no safe-100% fallback warnings. Its FrameGen
+parameters are synthetic; Dawnwalker visual acceptance remains outstanding.
+
 ## Candidate 2: export-ordinal startup crash
 
 Build `1.0.3-framegen-upstream.2` fixes the process-wide Vulkan discovery hook's

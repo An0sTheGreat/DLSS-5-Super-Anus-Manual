@@ -53,10 +53,9 @@ inline bool prewarm_slot_available(bool pooled, bool retiring, bool sources_matc
     return !retiring && (pooled || sources_match);
 }
 
-// Latches pressure for the whole real-frame group. Transactional prewarm
-// pressure is retried for the next group after fence retirement has had a
-// chance to recycle working textures. A later-pass failure remains sticky for
-// the configuration because an earlier scaled pass has already been recorded.
+// Once admission fails, keep this configuration native. Retrying on every
+// source frame alternates feature dimensions and visibly flickers. A settings
+// change supplies a new generation and permits a fresh admission attempt.
 class MultipassGroupPolicy
 {
 public:
@@ -78,18 +77,20 @@ public:
             seen_mask_ = 0;
         }
         if (pressure)
+        {
             native_ = true;
+            blocked_generation_ = generation;
+        }
         if (pass < 31) seen_mask_ |= 1u << pass;
         expected_mask_ = (1u << pass_count) - 1u;
         return native_;
     }
 
-    void allocation_failed(unsigned generation, std::uint64_t token, bool block_generation)
+    void allocation_failed(unsigned generation, std::uint64_t token)
     {
         if (generation == generation_ && (token == 0 || token == token_))
             native_ = true;
-        if (block_generation)
-            blocked_generation_ = generation;
+        blocked_generation_ = generation;
     }
 
     void reset()
