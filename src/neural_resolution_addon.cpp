@@ -1163,7 +1163,7 @@ extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 test 1.0.3-dawnwalker-no-copyback.2: later FrameGen pass copyback suppressed.";
 #else
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 test 1.0.3-dawnwalker-trace.1: bounded DLSSG callback entry/exit tracing.";
+    "V6.6 1.0.3-multipass-lifecycle.1: fence-recycled multipass working textures.";
 #endif
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
@@ -1209,7 +1209,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
             "NR BUILD ID: 1.0.3-dawnwalker-no-copyback.2 module=%s config-schema=7.",
 #else
-            "NR BUILD ID: 1.0.3-dawnwalker-trace.1 module=%s config-schema=7.",
+            "NR BUILD ID: 1.0.3-multipass-lifecycle.1 module=%s config-schema=7.",
 #endif
             module_path[0] != 0 ? module_path : "<unknown>");
         if (!canonical)

@@ -159,12 +159,12 @@ int main()
             ++stream_resets;
             stream_history->generation = 1;
         }
-        collect_resources_locked(pooled.last_use + 2000);
+        collect_resources_locked(pooled.last_use);
         if (!pooled.pooled)
         {
-            assert(pooled.retiring);
+            assert(pooled.retiring); // Replaced working sets do not wait on an idle timeout.
             complete_fence(fences[0], g_tracked_queues[0].serial);
-            collect_resources_locked(pooled.last_use + 2001);
+            collect_resources_locked(pooled.last_use + 1);
         }
         assert(pooled.active && pooled.pooled && !pooled.retiring);
         assert(pooled.allocated_bytes == (93ull << 20));

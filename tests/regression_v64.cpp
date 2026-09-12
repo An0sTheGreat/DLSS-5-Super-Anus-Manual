@@ -65,20 +65,27 @@ int main()
     nr::MultipassGroupPolicy groups;
     assert(!groups.use_native(1,100,0,3,false));
     assert(!groups.use_native(1,100,1,3,false));
-    groups.allocation_failed(1,100);
+    groups.allocation_failed(1,100,false);
     assert(groups.use_native(1,100,2,3,false));
-    assert(groups.blocked(1));
-    for (std::uint64_t frame=101;frame<125;++frame)
-        assert(groups.use_native(1,frame,0,3,false));
+    assert(!groups.blocked(1));
+    assert(!groups.use_native(1,101,0,3,false)); // Retry after transient first-pass pressure.
+    groups.allocation_failed(1,101,true);
+    assert(groups.blocked(1)); // A later-pass failure still protects the configuration.
+    assert(groups.use_native(1,102,0,3,false));
     groups.reset();
     assert(!groups.blocked(1));
+
+    assert(nr::prewarm_slot_available(true,false,false));
+    assert(nr::prewarm_slot_available(false,false,true));
+    assert(!nr::prewarm_slot_available(false,false,false)); // Busy unrelated set is not capacity.
+    assert(!nr::prewarm_slot_available(true,true,false));
 
     assert(groups.use_native(2,200,0,10,true));
     for (unsigned pass=1;pass<10;++pass)
         assert(groups.use_native(2,200,pass,10,false));
     assert(groups.complete());
-    assert(groups.blocked(2));
-    assert(groups.use_native(2,201,0,10,false));
+    assert(!groups.blocked(2));
+    assert(!groups.use_native(2,201,0,10,false));
     groups.reset();
     assert(!groups.use_native(3,202,0,10,false));
 

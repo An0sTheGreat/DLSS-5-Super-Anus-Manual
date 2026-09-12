@@ -698,9 +698,14 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
         // deliberately holds discarded-only recordings rather than assuming an
         // unobserved native submission never happened.
         if (!referenced && set.queue_mask == 0) set.unsafe_tracking = true;
+        // A replaced working set can begin real-fence retirement immediately.
+        // Recording references still protect PRE-Reset and unsubmitted work;
+        // native feature retention keeps its existing idle policy.
+        const bool recyclable_working_set = !set.native_feature && set.queue_mask != 0;
         if (!set.retiring && !referenced && !set.unsafe_tracking &&
-            retirement_candidate(set.valid, nr_enabled(), set.native_feature ? 99 : g_scale_percent.load(),
-                set.allocation_generation, g_scale_generation.load(), set.last_use, now))
+            (recyclable_working_set ||
+                retirement_candidate(set.valid, nr_enabled(), set.native_feature ? 99 : g_scale_percent.load(),
+                    set.allocation_generation, g_scale_generation.load(), set.last_use, now)))
         {
             set.retiring = true;
             for (std::size_t q = 0; q < g_tracked_queues.size(); ++q)
@@ -1437,13 +1442,16 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
             if (!candidate.active) continue;
             used += candidate.allocated_bytes;
             if (!candidate.capture && !candidate.native_feature && candidate.valid &&
-                !candidate.retiring &&
                 candidate.device == device && candidate.allocation_generation == allocation_generation &&
                 candidate.display_width == display_width && candidate.display_height == display_height &&
                 candidate.work_width == work_width && candidate.work_height == work_height &&
                 candidate.color_format == color_format && candidate.output_format == output_format &&
                 candidate.motion_format == motion_format && candidate.depth_format == depth_format &&
-                candidate.ui_format == ui_format && candidate.ui_alpha_format == ui_alpha_format)
+                candidate.ui_format == ui_format && candidate.ui_alpha_format == ui_alpha_format &&
+                nr::prewarm_slot_available(candidate.pooled, candidate.retiring,
+                    candidate.source_color == color && candidate.source_output == output &&
+                    candidate.source_motion == motion && candidate.source_depth == depth &&
+                    candidate.source_ui == ui && candidate.source_ui_alpha == ui_alpha))
                 ++compatible;
         }
         const unsigned missing = working_pass_count > compatible ? working_pass_count - compatible : 0;
@@ -1478,7 +1486,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         {
             g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
             log_fallback_once(generation,
-                "the complete multipass group could not be reserved; this configuration stays native until settings change");
+                "the complete multipass group could not be reserved; this frame group stays native while resources retire");
         }
         g_memory_native_groups.fetch_add(evaluation_pass == 0 ? 1u : 0u, std::memory_order_relaxed);
         g_effective_scale.store(100, std::memory_order_relaxed);
@@ -1508,7 +1516,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         display_width, display_height, work_width, work_height);
     if (set == nullptr)
     {
-        g_multipass_groups.allocation_failed(generation, group_token);
+        g_multipass_groups.allocation_failed(generation, group_token, evaluation_pass != 0);
         if (evaluation_pass == 0)
         {
             g_memory_native_groups.fetch_add(1, std::memory_order_relaxed);
@@ -1642,7 +1650,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     {
         cmd_list->barrier(set->native_color, reshade::api::resource_usage::shader_resource_non_pixel,
             reshade::api::resource_usage::unordered_access);
-        g_multipass_groups.allocation_failed(generation, group_token);
+        g_multipass_groups.allocation_failed(generation, group_token, evaluation_pass != 0);
         if (evaluation_pass != 0)
         {
             g_partial_group_suppressed.fetch_add(1, std::memory_order_relaxed);
