@@ -5,7 +5,7 @@ DLSS 5 Neural Rendering controls, cost scaling, presets, an integrated DX11
 bridge, and PNG screenshot pairs.
 
 The current standalone release is **v1.0.6.17**. Download the loose `.addon64`
-file from the [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases)
+file from the [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/releases)
 page for manual installation.
 
 > This is an unofficial community project. It is not affiliated with or
@@ -19,15 +19,13 @@ page for manual installation.
 
 ## Release channels
 
-- [`main`](../../tree/main) publishes the complete DLAssAss 5 Tool application,
-  including its validated addon payload.
-- [`standalone-addon`](../../tree/standalone-addon) publishes the addon source
-  and one loose `renodx-dlss5-super-anus.addon64` asset per addon release for
-  users who prefer manual installation.
+- This repository publishes the addon source and one loose
+  `renodx-dlss5-super-anus.addon64` asset per release for manual installation.
+- [`DLAssAss-5-Tool`](https://github.com/An0sTheGreat/DLAssAss-5-Tool)
+  publishes the complete manager application with the matching validated addon.
 
-Future releases update both channels: the complete application is released from
-`main`, and the matching standalone addon is released from `standalone-addon`.
-See [Release channels](docs/RELEASE_CHANNELS.md) for versions and checksums.
+Future releases update both repositories. See
+[Release channels](docs/RELEASE_CHANNELS.md) for versions and checksums.
 
 ## Features
 

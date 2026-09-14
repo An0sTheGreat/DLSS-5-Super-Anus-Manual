@@ -1,14 +1,17 @@
 # Release channels
 
-The repository has two public release channels:
+The project has two public release repositories:
 
-- `main`: complete DLAssAss 5 Tool application releases, tagged `v.1.x.y`.
-- `standalone-addon`: manual-install addon releases, tagged with the addon's
-  Windows build version and containing only `renodx-dlss5-super-anus.addon64`.
+- [`DLAssAss-5-Tool`](https://github.com/An0sTheGreat/DLAssAss-5-Tool): complete
+  manager application releases, tagged `v.1.x.y`.
+- [`DLSS-5-Super-Anus-Manual`](https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual):
+  manual-install addon releases, tagged with the addon's Windows build version
+  and containing only `renodx-dlss5-super-anus.addon64`.
 
-Every future public release must publish the complete application package from
-`main` and the matching loose addon from `standalone-addon`. NVIDIA runtime DLLs
-must never be committed or attached to either channel.
+Every future public release must publish the complete application package to
+`DLAssAss-5-Tool` and the matching loose addon to
+`DLSS-5-Super-Anus-Manual`. NVIDIA runtime DLLs must never be committed or
+attached to either repository.
 
 ## Stable standalone builds
 

@@ -22,8 +22,8 @@
 2. Install ReShade with add-on support for the game's rendering API.
 3. Supply compatible `nvngx_dlss.dll` and `nvngx_dlssnr.dll` files from your own
    legitimate installation. This project does not provide them.
-4. Download the latest `DLSS-5-Super-Anus-v*.zip` package from GitHub Releases.
-5. Extract `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
+4. Download the latest loose `renodx-dlss5-super-anus.addon64` file from GitHub Releases.
+5. Place `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
    directory, or into the add-on search path configured in ReShade.
 6. Start the game, open ReShade, and select the **RenoDX DLSS_A** tab.
 7. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the

@@ -204,11 +204,11 @@ All notable public changes are documented here.
 - Validated the Cost Scaler on NVIDIA hardware and WARP, plus focused DX11,
   lifetime, UI, hotkey, capture, and recovery fixtures.
 
-[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.6.17...HEAD
-[1.0.6.17]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.5.16...v1.0.6.17
-[1.0.5.16]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.3.12...v1.0.5.16
-[1.0.3.12]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.3...v1.0.3.12
-[1.0.3]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.2...v1.0.3
-[1.0.2]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.1...v1.0.2
-[1.0.1]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases/tag/v1.0.0
+[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.6.17...HEAD
+[1.0.6.17]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.5.16...v1.0.6.17
+[1.0.5.16]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.3.12...v1.0.5.16
+[1.0.3.12]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.3...v1.0.3.12
+[1.0.3]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/releases/tag/v1.0.0
