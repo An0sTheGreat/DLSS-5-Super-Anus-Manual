@@ -3,6 +3,12 @@
 /release/
 /evidence/
 /_archive/
+/artifacts/
+/.tools/
+/bin/
+/obj/
+/tests/bin/
+/tests/obj/
 *.addon
 *.addon64
 *.dll

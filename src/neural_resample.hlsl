@@ -3,7 +3,7 @@
 // Runs in the existing NR codec domain; never changes the game's SR resolution.
 #define ROOT_SIGNATURE \
     "DescriptorTable(SRV(t0)),DescriptorTable(UAV(u0))," \
-    "RootConstants(num32BitConstants=12,b0)," \
+    "RootConstants(num32BitConstants=14,b0)," \
     "DescriptorTable(SRV(t1)),DescriptorTable(SRV(t2))"
 Texture2D<float4> Source : register(t0);
 Texture2D<float4> SmallInput : register(t1);
@@ -19,6 +19,8 @@ cbuffer ResampleConstants : register(b0)
     uint2 DestinationOrigin;
     float TransferStrength;
     float ColorStrength;
+    float DetailStrength;
+    float ColourCoupling;
 };
 float4 LoadClamped(int2 p)
 {
@@ -79,8 +81,8 @@ void Resample(uint3 id : SV_DispatchThreadID)
     }
     const float3 luma = float3(0.2126,0.7152,0.0722);
     float4 native = NativeColor.Load(int3(pixel,0));
-    // Zero transfer is an exact native bypass, including alpha and signed HDR.
-    if (TransferStrength == 0) { Destination[target] = native; return; }
+    // Zero transfer bypasses the neural edit, not the independent sharpening.
+    if ((TransferStrength == 0 && Sharpness == 0) || DetailStrength == 0) { Destination[target] = native; return; }
     const bool supersampled = any(SourceExtent > DestinationSize);
     float3 input = (supersampled ? SampleArea(SmallInput,pixel) : SampleSmall(SmallInput,position)).rgb;
     float3 output = (supersampled ? SampleArea(Source,pixel) : SampleSmall(Source,position)).rgb;
@@ -95,17 +97,33 @@ void Resample(uint3 id : SV_DispatchThreadID)
     if (FilterMode == 1 && resultY > limit && inY > 1e-5) result *= limit/resultY;
     if (Sharpness > 0)
     {
-        float2 step = float2(SourceExtent)/float2(DestinationSize);
-        float3 e = FilterMode == 1 ? NativeAt(int2(pixel)+int2(1,0)) : SampleSmall(Source,position+float2(step.x,0)).rgb;
-        float3 w = FilterMode == 1 ? NativeAt(int2(pixel)-int2(1,0)) : SampleSmall(Source,position-float2(step.x,0)).rgb;
-        float3 n = FilterMode == 1 ? NativeAt(int2(pixel)-int2(0,1)) : SampleSmall(Source,position-float2(0,step.y)).rgb;
-        float3 s = FilterMode == 1 ? NativeAt(int2(pixel)+int2(0,1)) : SampleSmall(Source,position+float2(0,step.y)).rgb;
-        float3 center = FilterMode == 1 ? native.rgb : output;
+        // Reuse the residual path's spatial anchor in both modes. Raw NR
+        // neighbours bypass transfer/colour and amplify rejected neural noise.
+        float3 e = NativeAt(int2(pixel)+int2(1,0));
+        float3 w = NativeAt(int2(pixel)-int2(1,0));
+        float3 n = NativeAt(int2(pixel)-int2(0,1));
+        float3 s = NativeAt(int2(pixel)+int2(0,1));
+        float3 center = native.rgb;
         float minY = min(dot(center,luma),min(min(dot(e,luma),dot(w,luma)),min(dot(n,luma),dot(s,luma))));
         float maxY = max(dot(center,luma),max(max(dot(e,luma),dot(w,luma)),max(dot(n,luma),dot(s,luma))));
         float range = maxY-minY;
         float gain = Sharpness*(0.2+0.8*saturate(1-range/(abs(maxY)+1e-4)));
         if (range > 1e-5) result += (center-(e+w+n+s)*0.25)*gain;
+    }
+    // Independent output adjustment; the neutral branch leaves the existing
+    // resolve arithmetic untouched. No extra NR evaluation or history advance.
+    if (DetailStrength < 1) result = lerp(native.rgb, result, DetailStrength);
+    else if (DetailStrength > 1) {
+        float nativeY = dot(native.rgb, luma), neuralY = dot(result, luma);
+        float3 stable = result;
+        // Avoid unstable ratios near black and preserve signed HDR values.
+        // A common positive RGB multiplier preserves the completed result's hue.
+        if (nativeY > 1e-4 && neuralY > 1e-4) {
+            float ratio = clamp(neuralY / nativeY, 0.25, 4.0);
+            stable *= pow(ratio, DetailStrength - 1);
+        }
+        float3 coupled = native.rgb + (result - native.rgb) * DetailStrength;
+        result = stable + (coupled - stable) * ColourCoupling;
     }
     Destination[target] = float4(result,native.a);
 }

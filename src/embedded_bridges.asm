@@ -1,6 +1,7 @@
 option casemap:none
 
 EXTERN embedded_draw_inline_settings:PROC
+EXTERN embedded_draw_native_slider_reset:PROC
 EXTERN embedded_on_init_device:PROC
 EXTERN embedded_on_destroy_device:PROC
 EXTERN embedded_on_init_command_list:PROC
@@ -11,6 +12,7 @@ EXTERN auto_native_source:PROC
 
 PUBLIC combined_entry
 PUBLIC settings_bridge
+PUBLIC native_slider_reset_bridge
 PUBLIC init_device_bridge
 PUBLIC destroy_device_bridge
 PUBLIC init_command_list_bridge
@@ -146,6 +148,47 @@ settings_bridge PROC
     cmp qword ptr [r12+0B8h], 10h
     ret
 settings_bridge ENDP
+
+; After the native slider and before PopID. R12 is the current Setting.
+; The original PopID call still runs here, and the stock changed/write/save
+; path consumes the reset result after the existing reset-button block.
+native_slider_reset_bridge PROC
+    sub rsp, 0B8h
+    mov [rsp+20h], rax
+    mov [rsp+28h], rcx
+    mov [rsp+30h], rdx
+    mov [rsp+38h], r8
+    mov [rsp+40h], r9
+    mov [rsp+48h], r10
+    mov [rsp+50h], r11
+    movdqu [rsp+60h], xmm0
+    movdqu [rsp+70h], xmm1
+    movdqu [rsp+80h], xmm2
+    movdqu [rsp+90h], xmm3
+    movdqu [rsp+0A0h], xmm4
+    mov rcx, r12
+    call embedded_draw_native_slider_reset
+    test al, al
+    je native_reset_unchanged
+    mov dword ptr [rbp+0F0h], 1
+native_reset_unchanged:
+    movdqu xmm4, [rsp+0A0h]
+    movdqu xmm3, [rsp+90h]
+    movdqu xmm2, [rsp+80h]
+    movdqu xmm1, [rsp+70h]
+    movdqu xmm0, [rsp+60h]
+    mov r11, [rsp+50h]
+    mov r10, [rsp+48h]
+    mov r9, [rsp+40h]
+    mov r8, [rsp+38h]
+    mov rdx, [rsp+30h]
+    mov rcx, [rsp+28h]
+    mov rax, qword ptr [module_base]
+    mov rax, qword ptr [rax+271000h]
+    call qword ptr [rax+310h]
+    add rsp, 0B8h
+    ret
+native_slider_reset_bridge ENDP
 
 init_device_bridge PROC
     sub rsp, 28h

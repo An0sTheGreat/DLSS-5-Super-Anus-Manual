@@ -6,7 +6,7 @@
 
 namespace nr
 {
-enum class TraceKind : unsigned { gate, evaluation, framegen_entry, framegen_exit };
+enum class TraceKind : unsigned { gate, evaluation, framegen_entry, framegen_exit, source_begin, source_end, queue_submit, native_return, resource_tag, tag_return, frame_token, native_submit, native_fence };
 struct FrameTraceEvent
 {
     TraceKind kind = TraceKind::gate;
@@ -17,11 +17,20 @@ struct FrameTraceEvent
     bool retry = false;
     std::uint64_t result = 0; // Gate allow / NR wrapper return, NOT GPU completion.
     std::uint64_t command = 0, color = 0, output = 0;
+    std::uint64_t motion = 0, depth = 0, feature = 0, queue = 0;
+    std::uint64_t native_command = 0;
+    std::uint64_t parameters = 0, caller = 0;
     unsigned width = 0, height = 0, pass = 0;
     unsigned mfg_index = ~0u;
     std::uint64_t callback = 0, gap = 0;
     unsigned hook = 0, evaluations = 0, successes = 0;
     bool original_called = false;
+#ifdef NR_PASS_INPUT_TRACE
+    std::array<float, 4> temporal = {}; // jitter XY, motion scale XY, before wrapper
+    std::array<unsigned, 16> rects = {}; // color, output, motion, depth XYWH
+    unsigned reset = 0, host_reset = 0, hdr = 0;
+    bool managed = false;
+#endif
 };
 
 // Explicit ten-second capture only. No allocations, blocking locks, formatting,
@@ -30,7 +39,7 @@ class FrameTrace
 {
 public:
     static constexpr unsigned capacity = 4096;
-    bool start(std::uint64_t now)
+    bool start(std::uint64_t now, unsigned duration_ms = 10000)
     {
         if (!TryAcquireSRWLockExclusive(&lock_)) return false;
         const bool idle = end_.load(std::memory_order_relaxed) == 0 && read_ == count_;
@@ -38,7 +47,7 @@ public:
         {
             read_ = count_ = 0;
             dropped_.store(0, std::memory_order_relaxed);
-            end_.store(now + 10000, std::memory_order_release);
+            end_.store(now + duration_ms, std::memory_order_release);
         }
         ReleaseSRWLockExclusive(&lock_);
         return idle;
@@ -48,6 +57,15 @@ public:
         return now < end_.load(std::memory_order_acquire);
     }
     bool enabled() const { return end_.load(std::memory_order_relaxed) != 0; }
+    std::uint64_t capture_id() const { return end_.load(std::memory_order_acquire); }
+    // Caller serializes the command record. Consume its observation separately
+    // from GPU lifetime references, including expired/previous capture tags.
+    bool take_submission(std::uint64_t *tag, std::uint64_t now) const
+    {
+        const auto capture = *tag;
+        *tag = 0;
+        return capture != 0 && capture == capture_id() && recording(now);
+    }
     void push(const FrameTraceEvent &event)
     {
         if (!recording(event.tick)) return;

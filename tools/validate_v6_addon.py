@@ -7,8 +7,9 @@ import ctypes
 import hashlib
 import struct
 from pathlib import Path
+from addon_version import ABOUT_PATCHES, validate_version
 
-from patch_v6_addon import (EXPECTED_SHA256, PATCHES, CAPTURE_PATCHES, PeImage,
+from patch_v6_addon import (EXPECTED_SHA256, PATCHES, CAPTURE_PATCHES, INPUT_TRACE_PATCHES, PeImage,
     ADDON_NAME_POINTER_RVA, ORIGINAL_ADDON_NAME, DISPLAY_ADDON_NAME,
     OVERLAY_TITLE_PATCHES)
 
@@ -49,12 +50,30 @@ def main() -> None:
     parser.add_argument("--experimental-vulkan", action="store_true")
     parser.add_argument("--dx11-game-test", action="store_true")
     parser.add_argument("--screenshot-capture", action="store_true")
+    parser.add_argument("--framegen-input-trace", action="store_true")
+    parser.add_argument("--integrated-release", action="store_true")
+    parser.add_argument("--pass-controls-preview", action="store_true")
+    parser.add_argument("--pass-controls-release", action="store_true")
+    parser.add_argument("--motion-runtime-release", action="store_true")
+    parser.add_argument("--slider-reset-release", action="store_true")
+    parser.add_argument("--addon-version", default="1.0.3")
     args = parser.parse_args()
 
     base_bytes = args.base.read_bytes()
     assert hashlib.sha256(base_bytes).hexdigest() == EXPECTED_SHA256
     base = PeImage(bytearray(base_bytes))
     addon = PeImage(bytearray(args.addon.read_bytes()))
+    pass_controls = (args.pass_controls_preview or args.pass_controls_release or
+                     args.motion_runtime_release or args.slider_reset_release)
+    if args.integrated_release or pass_controls:
+        assert not args.framegen_input_trace and args.experimental_dx11 and args.experimental_vulkan
+        history_fix = b"NR BUILD ID: 1.0.3-pass-controls.10-history.1 module=" in addon.data
+        build_id = b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
+        assert b"NR BUILD ID: " + build_id in addon.data
+        assert b"NR nested-source guard disabled:" in addon.data
+        for diagnostic in (b"tlou2-boundary-trace", b"tlou2-nested-source", b"tlou2-input-trace",
+                           b"NR boundary probe:", b"NR boundary tag:", b"NR boundary native-pre-submit:"):
+            assert diagnostic not in addon.data, diagnostic
     assert addon.section_count == base.section_count + 1
     new_section = addon.section(addon.section_count - 1)
     new_start, new_end = new_section[1], new_section[1] + new_section[0]
@@ -63,6 +82,22 @@ def main() -> None:
 
     # Existing sections may differ only at the verified hook and title sites.
     allowed_offsets: set[int] = set()
+    if pass_controls:
+        for rva, expected in ABOUT_PATCHES.items():
+            offset = base.rva_to_offset(rva)
+            assert bytes(base.data[offset:offset + len(expected)]) == expected
+            allowed_offsets.update(range(offset, offset + len(expected)))
+        rva, size = addon.directory(2)
+        assert new_start <= rva and rva + size <= new_end
+        diagnostic = b"NR BUILD ID: 1.0.3-pass-controls.9-input-trace.1 module=" in addon.data
+        expected_build = 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
+        validate_version(base, addon, args.addon, expected_build,
+            release=args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release,
+            version=args.addon_version)
+        if args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release:
+            assert b"NR pass metadata:" not in addon.data
+        if diagnostic:
+            assert b"NR pass metadata:" in addon.data
     name_pointer_offset = base.rva_to_offset(ADDON_NAME_POINTER_RVA)
     allowed_offsets.update(range(name_pointer_offset, name_pointer_offset + 8))
     for rva, (expected, replacement) in OVERLAY_TITLE_PATCHES.items():
@@ -71,6 +106,9 @@ def main() -> None:
         assert bytes(addon.data[offset:offset + len(replacement)]) == replacement
         allowed_offsets.update(range(offset, offset + len(expected)))
     patches = PATCHES | CAPTURE_PATCHES if args.screenshot_capture else PATCHES
+    if args.framegen_input_trace:
+        assert args.screenshot_capture
+        patches = patches | INPUT_TRACE_PATCHES
     for rva, (expected, _, kind) in patches.items():
         assert bytes(base.data[base.rva_to_offset(rva):base.rva_to_offset(rva) + len(expected)]) == expected
         allowed_offsets.update(range(base.rva_to_offset(rva), base.rva_to_offset(rva) + len(expected)))
@@ -90,7 +128,7 @@ def main() -> None:
             if base.data[offset] != addon.data[offset]:
                 actual_offsets.add(offset)
     assert actual_offsets <= allowed_offsets
-    assert len(PATCHES) == 9
+    assert len(PATCHES) == 10
 
     base_name_va = struct.unpack_from("<Q", base.data, name_pointer_offset)[0]
     base_name_rva = base_name_va - base.image_base
@@ -184,7 +222,7 @@ def main() -> None:
                        b"NVSDK_NGX_D3D11_EvaluateFeature_C", b"NVSDK_NGX_D3D11_Shutdown1",
                        b"DX11 output copy queued"):
             assert marker in strings
-    for marker in (b"Neural Rendering Resolution", b"Reconstruction Sharpness",
+    for marker in (b"Neural Rendering Resolution", b"Neural Sharpness",
                    b"NR ON", b"NR OFF", b"PRESET 1", b"AppliedScalePercentV6",
                    b"LastEnabledPreset", b"OptiScaler XeFG", args.version.encode("ascii"),
                    b"XeFGNativeInputCompatibility", b"loaded settings from [%s]",
@@ -227,7 +265,8 @@ def main() -> None:
     kernel32.FreeLibrary(handle)
 
     print(f"{args.version} static validation passed (no GPU execution)")
-    print(f"official sections preserved outside {len(patches)} verified hook sites and three display-name sites")
+    print(f"official sections preserved outside {len(patches)} verified hook sites and three display-name sites"
+          + (" plus three About-label operands" if args.pass_controls_preview else ""))
     print(f"new section 0x{new_start:X}-0x{new_end:X}; entry 0x{entry:X}")
     print(f"sha256={hashlib.sha256(addon.data).hexdigest()}")
 

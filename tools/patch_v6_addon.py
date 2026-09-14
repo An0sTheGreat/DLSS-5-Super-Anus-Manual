@@ -13,6 +13,7 @@ import hashlib
 import re
 import struct
 from pathlib import Path
+from addon_version import ABOUT_PATCHES, compile_version, version_resources
 
 
 EXPECTED_SHA256 = "1d855cf226857dce890cffbf7206ba9b6497ce1d471b217c1c8b44b6cd5d27e9"
@@ -39,11 +40,17 @@ PATCHES = {
     0x05C281: (bytes.fromhex("E8 FA 15 00 00"), "scaled_evaluate_create", "call"),
     0x05C3D2: (bytes.fromhex("E8 A9 14 00 00"), "scaled_evaluate_existing", "call"),
     0x0A85DF: (bytes.fromhex("49 83 BC 24 B8 00 00 00 10"), "settings_bridge", "call9"),
+    0x0A8EC1: (bytes.fromhex("48 8B 05 38 81 1C 00 FF 90 10 03 00 00"), "native_slider_reset_bridge", "call13"),
     0x0AC0D0: (bytes.fromhex("55 41 57 41 56"), "init_device_bridge", "jmp"),
     0x0AC6B0: (bytes.fromhex("55 41 57 41 56"), "destroy_device_bridge", "jmp"),
     0x0AAC50: (bytes.fromhex("E9 FB 0A 02 00"), "init_command_list_bridge", "jmp"),
     0x0AB890: (bytes.fromhex("56 57 53 48 83 EC 50"), "destroy_command_list_bridge", "jmp7"),
     0x0AB9B0: (bytes.fromhex("55 41 57 41 56"), "destroy_resource_bridge", "jmp"),
+}
+INPUT_TRACE_PATCHES = {
+    # Both insertion paths for the existing post-vendor native-SR observer.
+    0x07CD18: (bytes.fromhex("48 8D 35 F1 EF 01 00"), "observed_native_return", "lea7"),
+    0x07CD49: (bytes.fromhex("48 8D 15 C0 EF 01 00"), "observed_native_return", "lea7"),
 }
 CAPTURE_PATCHES = {
     # Validated native SR descriptor already exists. Preserve its final store,
@@ -231,6 +238,10 @@ def main() -> None:
     parser.add_argument("--map", dest="map_file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--screenshot-capture", action="store_true")
+    parser.add_argument("--framegen-input-trace", action="store_true")
+    parser.add_argument("--addon-build", type=int)
+    parser.add_argument("--addon-version", default="1.0.3")
+    parser.add_argument("--release-version", action="store_true")
     parser.add_argument("--section-name", default=".nr-v64", choices=(".nr-v64", ".nr-v65", ".nr-v66", ".nr-dx11"))
     args = parser.parse_args()
     NEW_SECTION_NAME = args.section_name.encode("ascii")
@@ -349,7 +360,20 @@ def main() -> None:
         exception_blob.extend(struct.pack("<III", begin + shift, end + shift, unwind + shift))
     exceptions_rva = append_blob(payload, new_rva, exception_blob, 4)
 
+    if args.addon_build is not None:
+        version, about = compile_version(
+            args.output, args.addon_build, args.release_version, args.addon_version)
+        about_rva = append_blob(payload, new_rva, about + b"\0", 1)
+        resource_rva = new_rva + align(len(payload), 4)
+        resource_blob = version_resources(base, resource_rva, version)
+        assert append_blob(payload, new_rva, resource_blob, 4) == resource_rva
+
     base.add_section(payload, new_rva)
+    if args.addon_build is not None:
+        base.set_directory(2, resource_rva, len(resource_blob))
+        base.patch(0x199D8, ABOUT_PATCHES[0x199D8], b"\x4C\x8D\x05" + struct.pack("<i", about_rva - (0x199D8 + 7)))
+        base.patch(0x199ED, ABOUT_PATCHES[0x199ED], b"\xBA" + struct.pack("<I", len(about)))
+        base.patch(0x199F2, ABOUT_PATCHES[0x199F2], b"\x41\xB9" + struct.pack("<I", len(about)))
     base.set_directory(1, imports_rva, len(import_blob))
     base.set_directory(3, exceptions_rva, len(exception_blob))
     base.set_directory(5, relocs_rva, len(reloc_blob))
@@ -360,6 +384,9 @@ def main() -> None:
 
     symbols = read_map_symbols(args.map_file, embedded.image_base)
     patches = PATCHES | CAPTURE_PATCHES if args.screenshot_capture else PATCHES
+    if args.framegen_input_trace:
+        assert args.screenshot_capture
+        patches = patches | INPUT_TRACE_PATCHES
     required = {name for _, name, _ in patches.values()} | {"combined_entry"}
     missing = sorted(required - symbols.keys())
     if missing:

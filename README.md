@@ -4,8 +4,9 @@ An experimental 64-bit ReShade add-on that extends RenoDX DLSS with practical
 DLSS 5 Neural Rendering controls, cost scaling, presets, an integrated DX11
 bridge, and PNG screenshot pairs.
 
-The current public release is **v1.0.3**. Download the packaged add-on from the
-[Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases) page.
+The current standalone release is **v1.0.6.17**. Download the loose `.addon64`
+file from the [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases)
+page for manual installation.
 
 > This is an unofficial community project. It is not affiliated with or
 > endorsed by NVIDIA, RenoDX, ReShade, or any game developer.
@@ -16,12 +17,29 @@ The current public release is **v1.0.3**. Download the packaged add-on from the
 > this project. Obtain them from a legitimate game, driver, or software
 > installation for which you have permission to use the files.
 
+## Release channels
+
+- [`main`](../../tree/main) publishes the complete DLAssAss 5 Tool application,
+  including its validated addon payload.
+- [`standalone-addon`](../../tree/standalone-addon) publishes the addon source
+  and one loose `renodx-dlss5-super-anus.addon64` asset per addon release for
+  users who prefer manual installation.
+
+Future releases update both channels: the complete application is released from
+`main`, and the matching standalone addon is released from `standalone-addon`.
+See [Release channels](docs/RELEASE_CHANNELS.md) for versions and checksums.
+
 ## Features
 
 - One add-on containing the RenoDX DLSS interface and Neural Rendering controls.
 - Neural Rendering resolution from 25% to 150%, staged behind an Apply button.
 - Matched Residual and Direct Reconstruction modes.
-- Adjustable neural transfer, color strength, and reconstruction sharpness.
+- Adjustable neural transfer and color strength from 0–200%, plus reconstruction
+  sharpness. Color defaults to 100%; values above 100% may oversaturate, produce
+  out-of-gamut color, or strengthen haloing.
+- Right-click any native RenoDX or custom Neural Rendering slider and choose
+  **Reset** to restore only that slider to its authoritative default. Resolution
+  returns to a staged 100% and still requires **Apply**.
 - Saved presets and rebindable controls.
 - Automatic recovery when a game temporarily stops submitting a usable native
   DLSS input.

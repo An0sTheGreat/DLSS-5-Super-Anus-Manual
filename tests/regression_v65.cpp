@@ -90,5 +90,17 @@ int main()
         ++count;
     }
     assert(count + trace.dropped() == 4000);
+    assert(trace.start(50000, 1000));
+    assert(trace.capture_id() == 51000 && trace.recording(50999));
+    std::uint64_t submission = trace.capture_id();
+    assert(trace.take_submission(&submission, 50001) && submission == 0);
+    for (unsigned i = 0; i < 20000; ++i) assert(!trace.take_submission(&submission, 50002));
+    submission = 40000; // Previous capture, even if retained by a command record.
+    assert(!trace.take_submission(&submission, 50003) && submission == 0);
+    submission = trace.capture_id();
+    assert(!trace.take_submission(&submission, 51000) && submission == 0);
+    assert(!trace.recording(51000));
+    assert(!trace.pop(51000, &event));
+    assert(trace.capture_id() == 0);
     std::puts("V6.5: bounded 64-bit formatting, API rejection, trace bounds/drain/concurrency passed.");
 }

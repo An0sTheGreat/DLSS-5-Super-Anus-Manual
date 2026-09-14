@@ -10,6 +10,18 @@ the normal starting point. **Upscaled** can help games whose focus state or fram
 generation changes which source is visible. Manual choices are diagnostic tools;
 their behavior depends on the game pipeline.
 
+Multipass Motion appears directly below Hook Method:
+
+- **Reuse Game Motion (Recommended)** supplies the resampled game motion to every
+  pass and is the default.
+- **Zero Later-Pass Motion** preserves the earlier behavior where only Pass 1
+  receives game motion.
+- **Zero Motion + Reset History** also resets passes 2+ every evaluation. This is
+  a diagnostic option that may shimmer or flicker.
+
+Changing this setting uses one native transition frame and resets pass history
+before managed processing resumes. The selection persists across launches.
+
 ## Neural Rendering Performance
 
 | Setting | Range | Behavior |
@@ -17,14 +29,18 @@ their behavior depends on the game pipeline.
 | Neural Rendering Resolution | 25–150% | Stages the internal NR evaluation scale. Below 100% reduces NR cost; above 100% supersamples NR. Press Apply to activate it. |
 | Reconstruction Mode | Direct / Matched Residual | Chooses how scaled NR output is combined with the native reference. |
 | Neural Transfer Strength | 0–200% | Controls the strength of the neural edit. At 0%, output returns to the native reference, though NR still runs. |
-| Neural Color Strength | 0–100% | Controls chromatic contribution relative to luminance/detail. |
+| Neural Color Strength | 0–200% | Controls chromatic contribution relative to luminance/detail. Defaults to 100% for every pass. Values above 100% exaggerate chroma and may cause oversaturation, out-of-gamut color, or stronger haloing. |
 | Reconstruction Sharpness | 0–100% | Applies after scaled reconstruction. Disabled only at applied 100%. |
 
+Right-click any native RenoDX or custom Neural Rendering slider and choose
+**Reset** to restore only that control. Native controls keep their RenoDX-defined
+defaults and normal preset persistence. Resetting Neural Rendering Resolution
+stages 100%; press **Apply** to activate it.
+
 At applied 100%, the first pass uses original Neural Rendering. In a multipass
-group, later evaluations use same-size working textures only to supply zero
-motion vectors; there is no second game-frame movement interval to reuse. The
-controls below the resolution setting remain unavailable because they do not
-affect the native-resolution path.
+group, later evaluations use same-size working textures for the selected motion
+policy. The controls below the resolution setting remain unavailable because
+they do not affect the native-resolution path.
 
 Recommended baseline:
 
@@ -48,8 +64,8 @@ FrameGen hook selections run NR once per real source frame on the native Super
 Resolution output. The add-on does not run NR, record GPU work, or change
 resources inside FrameGen callbacks. This keeps vendor Frame Generation timing
 and parameters untouched while allowing resolution scaling and multipass NR.
-Pass 1 receives the game's motion vectors; pass 2 and later receive explicit
-zero motion vectors because no new game-frame movement occurred between passes.
+Pass 1 always receives the game's motion vectors. Later passes follow the
+selected Multipass Motion policy.
 
 Values above 100% increase internal NR detail and cost without changing the
 game's output resolution or DLSS Super Resolution setting. They can consume
@@ -95,6 +111,7 @@ The add-on stores values in `ReShade.ini`, principally under
 - `CostResolveMode`
 - `CostTransferPercent`
 - `CostColorPercent`
+- `MultipassMotionMode`
 - `LastEnabledPreset`
 - `NRToggleKey`
 - `PresetCycleKey`

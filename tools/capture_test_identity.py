@@ -1,12 +1,15 @@
 """Identify a retained internal request entry for a controlled test host only."""
-import hashlib, json
+import hashlib, json, sys
 from pathlib import Path
 from patch_v6_addon import PeImage, read_map_symbols
 root = Path(__file__).resolve().parent.parent
-data = (root/'build/dx11-integrated-game-test.addon64').read_bytes()
+candidate = Path(sys.argv[1]) if len(sys.argv) > 1 else root/'build/dx11-integrated-game-test.addon64'
+data = candidate.read_bytes()
 addon = PeImage(bytearray(data))
-embedded = PeImage(bytearray((root/'build/neural_resolution_dx11_embedded.dll').read_bytes()))
-symbols = read_map_symbols(root/'build/neural_resolution_dx11.map', embedded.image_base)
+symbol_dir = candidate.parent if all((candidate.parent/name).is_file() for name in
+    ('neural_resolution_dx11_embedded.dll', 'neural_resolution_dx11.map')) else root/'build'
+embedded = PeImage(bytearray((symbol_dir/'neural_resolution_dx11_embedded.dll').read_bytes()))
+symbols = read_map_symbols(symbol_dir/'neural_resolution_dx11.map', embedded.image_base)
 section = addon.section(addon.section_count-1)
 assert section[4] == b'.nr-dx11'
 rva = symbols['embedded_request_screenshot'] + section[1] - 0x1000

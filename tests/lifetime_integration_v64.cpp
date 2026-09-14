@@ -1,6 +1,7 @@
 // Runs the actual collector against real WARP D3D12 queues/fences. NGX release
 // calls are mocks and host slot storage is synthetic; this does NOT run NR.
 #define NR_LIFETIME_TEST
+#define NR_PASS_INPUT_TRACE
 #include "../src/neural_resolution_addon.cpp"
 #include <cassert>
 #include <cstdio>
@@ -60,6 +61,77 @@ int main()
         MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     assert(g_target_module != nullptr);
     InitializeCriticalSection(&g_render_mutex);
+    // Exercise the actual evaluation wrapper; only the vendor call is a
+    // test-owned return-success stub. No installed addon or game is patched.
+    {
+        auto *stub=reinterpret_cast<unsigned char *>(g_target_module)+kEvaluateWrapperRva;
+        const unsigned char success_code[]={0xB8,1,0,0,0,0xC3};
+        std::memcpy(stub,success_code,sizeof(success_code));
+        DWORD old=0; assert(VirtualProtect(stub,sizeof(success_code),PAGE_EXECUTE_READWRITE,&old));
+        FlushInstructionCache(GetCurrentProcess(),stub,sizeof(success_code));
+        auto *record=claim_command_list_locked(reinterpret_cast<reshade::api::command_list *>(1),
+            reinterpret_cast<reshade::api::device *>(1),1,1);
+        assert(record);
+        alignas(16) unsigned char input[kInputSize]={}; field<void *>(input,0)=reinterpret_cast<void *>(1);
+        auto *first=g_scale_history.find(1,0), *second=g_scale_history.find(1,1);
+        first->generation=second->generation=7;
+        assert(invoke_native_evaluation(input,true)==1);
+        assert(first->generation==7 && second->generation==7);
+        assert(invoke_native_evaluation(input)==1);
+        assert(first->generation==0 && second->generation==0);
+        // Diagnostic snapshots preserve every caller byte and vendor result.
+        field<float>(input,0x4C)=0.25f; field<float>(input,0x50)=-0.375f;
+        field<float>(input,0x54)=3440.f; field<float>(input,0x58)=1440.f;
+        field<std::uint8_t>(input,0x5C)=1; field<std::uint8_t>(input,0x5D)=1;
+        field<std::uint8_t>(g_target_module,0x26D900)=1;
+        field<std::uint64_t>(input,0x20)=123; field<std::uint64_t>(input,0x28)=456;
+        for (unsigned i=0;i<16;++i) field<unsigned>(input,0x60+4*i)=i+10;
+        std::array<unsigned char,kInputSize> before={};
+        std::memcpy(before.data(),input,kInputSize);
+        const auto capture_start=GetTickCount64();
+        assert(g_frame_trace.start(capture_start,1000));
+        assert(invoke_native_evaluation(input,true)==1);
+        assert(std::memcmp(before.data(),input,kInputSize)==0);
+        nr::FrameTraceEvent captured;
+        assert(g_frame_trace.pop(capture_start+1001,&captured));
+        assert(captured.kind==nr::TraceKind::evaluation && captured.result==1 && captured.managed);
+        assert(captured.temporal[0]==0.25f && captured.temporal[1]==-0.375f);
+        assert(captured.temporal[2]==3440.f && captured.temporal[3]==1440.f);
+        assert(captured.reset==1 && captured.host_reset==1 && captured.hdr==1);
+        assert(captured.motion==123 && captured.depth==456);
+        for (unsigned i=0;i<16;++i) assert(captured.rects[i]==i+10);
+        assert(!g_frame_trace.pop(capture_start+1001,&captured));
+        field<std::uint8_t>(g_target_module,0x26D900)=0;
+        second->generation=7;
+        assert(invoke_native_evaluation(input)==1);
+        assert(first->generation==0 && second->generation==7); // Steady neutral Pass 1.
+        // Exercise the actual neutral fast path, not just the transition helper.
+        // Pass 1 must be counted or the second pass stays native indefinitely.
+        g_lifetime_events_registered=true;
+        field<int>(g_target_module,kPresetIndexRva)=1;
+        field<unsigned>(g_target_module,0x266FA4)=2;
+        field<float>(g_target_module,0x270FB0)=3.f;
+        g_scale_percent=100; g_transfer_percent=100; g_color_percent=100; g_sharpness_percent=0;
+        g_stream_generation=7; g_transition_generation=7; g_transition_pass_mask=0;
+        field<unsigned>(input,8)=0;
+        assert(scaled_evaluate_body(input,1)==1);
+        assert(g_transition_pass_mask==1);
+        field<unsigned>(input,8)=1;
+        assert(scaled_evaluate_body(input,1)==1);
+        assert(g_transition_pass_mask==3);
+        field<unsigned>(input,8)=0;
+        assert(scaled_evaluate_body(input,1)==1);
+        assert(g_transition_generation==0);
+        g_lifetime_events_registered=false;
+        puts("Neutral first-pass production route: complete transition group counted and released.");
+        first->generation=second->generation=7; stub[1]=0;
+        FlushInstructionCache(GetCurrentProcess(),stub,sizeof(success_code));
+        assert(invoke_native_evaluation(input,true)==0);
+        assert(first->generation==0 && second->generation==0);
+        DWORD ignored=0; assert(VirtualProtect(stub,sizeof(success_code),old,&ignored));
+        g_tracked_command_lists={}; g_scale_history.forget(1); g_successful_evaluations=0;
+        puts("Production history invalidation: managed success retained; native bypass and failed evaluation invalidate dependent passes. Vendor call mocked.");
+    }
     // Maintenance must never block or recursively enter an already-owned NR lock.
     assert(try_lock_native_nr());
     assert(!try_lock_native_nr());
@@ -117,6 +189,18 @@ int main()
     assert(transition_uses_native(2, 100));
     assert(!transition_uses_native(2, 101));
     assert(g_transition_generation == 0);
+    field<unsigned>(g_target_module, 0x266FA4) = 2;
+    observe_stream_configuration();
+    assert(g_scale_generation == 2 && g_quiesce_generation == 2);
+    // Even a full previous-count cache stays pinned until real retirement.
+    g_resource_sets[0].active = g_resource_sets[0].valid = true;
+    g_resource_sets[0].allocation_generation = 1;
+    g_resource_sets[0].unsafe_tracking = true;
+    g_resource_sets[0].allocated_bytes = nr::maximum_working_cache;
+    assert(!configuration_epoch_ready_locked(2, 1000));
+    assert(!g_multipass_groups.blocked(g_stream_generation.load()));
+    g_resource_sets = {}; // Synthetic allocation: no GPU objects are owned.
+    assert(configuration_epoch_ready_locked(2, 1001) && g_quiesce_generation == 0);
     // Present and FrameGen-without-callback-context may have no advancing
     // native SR frame ID. Keep every configured pass in the first group native,
     // then release the transition on the first repeated pass.
@@ -135,6 +219,7 @@ int main()
     g_scale_generation = 1;
     g_stream_generation = 1;
     g_stream_signature = 0;
+    field<unsigned>(g_target_module, 0x266FA4) = 1;
 
     // Repeated source identities recycle one allocation after real queue-fence
     // completion. Texture rotation does not create a new stream-history reset.
@@ -180,11 +265,43 @@ int main()
     collect_resources_locked(2002);
     assert(pooled.active && pooled.pooled);
     g_observed_pass_count = 1;
+    g_sharpness_percent = 25;
+    collect_resources_locked(2003);
+    assert(pooled.active && pooled.pooled); // Native-size sharpening still owns working textures.
+    g_sharpness_percent = 0;
+    g_transfer_percent = 80;
+    collect_resources_locked(2003);
+    assert(pooled.active && pooled.pooled);
+    g_transfer_percent = 100;
+    g_color_percent = 80;
+    collect_resources_locked(2003);
+    assert(pooled.active && pooled.pooled);
+    g_color_percent = 100;
     collect_resources_locked(2003);
     assert(!pooled.active && g_pooled_sets == 0);
+    g_sharpness_percent = 25;
     g_scale_percent = 75;
     g_resource_sets = {};
     puts("Stream transition and fence-safe working-texture pooling passed.");
+
+    // Secondary-pass bindings belong to the owner, never a temporary local.
+    // Destroying any such source invalidates the whole set but does not drop
+    // recording pins; pooling clears these identities only after retirement.
+    auto &shared = g_resource_sets[0];
+    shared.active = shared.valid = true;
+    shared.device = reinterpret_cast<reshade::api::device *>(1);
+    shared.additional_sources[0].source_color = {123};
+    shared.additional_sources[0].source_output = {124};
+    assert(shared.additional_sources[0].matches({123},{124},{},{},{},{}));
+    g_tracked_command_lists[0].active = true;
+    g_tracked_command_lists[0].references.sets = 1;
+    on_destroy_resource(shared.device, {124});
+    assert(!shared.valid && shared.active && g_tracked_command_lists[0].references.sets == 1);
+    g_tracked_command_lists = {};
+    // Synthetic binding has no GPU views. Real retirement is covered below.
+    pool_resource_set(shared, 1);
+    assert(!shared.additional_sources[0].source_color.handle && !shared.additional_sources[0].source_output.handle);
+    g_resource_sets = {};
 
     // A full working cache can still have reusable capacity: admission must
     // collect completed fences before counting slots. Never count a busy or

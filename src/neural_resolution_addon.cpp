@@ -24,6 +24,10 @@
 #include "native_feature_slots.hpp"
 #include "diagnostic_format.hpp"
 #include "frame_trace.hpp"
+#ifdef NR_FRAMEGEN_BOUNDARY_TRACE
+#include "framegen_boundary_policy.hpp"
+namespace { namespace boundary_probe { void report(); } }
+#endif
 #include "backends/dx11_build_config.hpp"
 #include "backends/backend_support.hpp"
 #include "runtime_api_ui.hpp"
@@ -130,10 +134,14 @@ constexpr std::array<std::uint8_t, 5> kSecondOriginalCall = { 0xE8, 0xA9, 0x14, 
 
 std::atomic_int g_scale_percent = 100;
 std::atomic_int g_pending_scale_percent = 100;
-std::atomic_int g_sharpness_percent = 25;
+std::atomic_int g_sharpness_percent = 0;
 std::atomic_int g_resolve_mode = 1;
 std::atomic_int g_transfer_percent = 100;
 std::atomic_int g_color_percent = 100;
+std::atomic<nr::MultipassMotionMode> g_multipass_motion_mode =
+    nr::MultipassMotionMode::reuse_game_motion;
+nr::PassControls g_pass_controls; // Protected by dx12::g_render_mutex after initialization.
+nr::PassSectionState g_pass_sections; // Overlay UI only after initialization.
 std::atomic_uint g_scale_generation = 1;
 std::atomic_uint g_stream_generation = 1;
 std::atomic_uint g_logged_create_site_generation = 0;
@@ -367,6 +375,13 @@ void observe_stream_configuration()
     {
         if (!g_stream_signature.compare_exchange_weak(previous, signature, std::memory_order_acq_rel))
             continue;
+        // A larger group needs capacity that a full single-pass cache may be
+        // holding in flight. Drain it through the existing real-fence epoch
+        // barrier before attempting admission, rather than latching a false
+        // permanent fallback against the previous pass count's working sets.
+        if (passes > ((previous >> 8) & 0xFFFFu))
+            g_quiesce_generation.store(g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1,
+                std::memory_order_release);
         const unsigned generation = g_stream_generation.fetch_add(1, std::memory_order_relaxed) + 1;
         g_transition_generation.store(generation, std::memory_order_release);
         g_transition_native_frame.store(0, std::memory_order_release);
@@ -420,12 +435,17 @@ void pump_frame_trace()
 {
     static std::uint64_t deadline = 0, next_drain = 0;
     const auto now = GetTickCount64();
-    if (g_trace_requested.exchange(false) && g_frame_trace.start(now))
+#if defined(NR_FRAMEGEN_INPUT_TRACE) || defined(NR_PASS_INPUT_TRACE)
+    constexpr unsigned duration_ms = 1000; // Coherent short burst instead of a truncated ten-second prefix.
+#else
+    constexpr unsigned duration_ms = 10000;
+#endif
+    if (g_trace_requested.exchange(false) && g_frame_trace.start(now, duration_ms))
     {
-        deadline = now + 10000;
+        deadline = now + duration_ms;
         g_trace_status.store(1);
-        log_text(reshade::log::level::info,
-            "NR V6.6 trace START: 10 seconds, at most 4096 records; DLSSG callback entry/exit, native gate and NR wrapper observations only, not GPU timings.");
+        log_message(reshade::log::level::info,
+            "NR V6.6 trace START: %u ms, at most 4096 records; NGX pre-evaluation inputs, correlated native SR, vendor returns and first observed command submissions. CPU observations only; DLSSG keys do not prove feature type.", duration_ms);
     }
     if (g_trace_status.load() == 0 || now < deadline || now < next_drain) return;
     g_trace_status.store(2);
@@ -439,10 +459,58 @@ void pump_frame_trace()
                 "NR V6.6 trace gate: ms=%llu thread=%u frame=%llu source=%u retry=%u allowed=%llu.",
                 event.tick, event.thread, event.frame, event.source, event.retry ? 1u : 0u, event.result);
         else if (event.kind == nr::TraceKind::evaluation)
+        {
             log_message(reshade::log::level::info,
                 "NR V6.6 trace eval: ms=%llu thread=%u source-frame=%llu MFG-index=%u cmd=0x%llx color=0x%llx output=0x%llx extent=%ux%u pass=%u result=0x%llx (CPU wrapper return).",
                 event.tick, event.thread, event.frame, event.mfg_index, event.command,
                 event.color, event.output, event.width, event.height, event.pass, event.result);
+#ifdef NR_PASS_INPUT_TRACE
+            log_message(reshade::log::level::info,
+                "NR pass metadata: ms=%llu thread=%u pass=%u managed=%u motion=0x%llx depth=0x%llx jitter=%g/%g mv-scale=%g/%g input-reset=%u host-reset-before=%u hdr=%u color-rect=%u/%u/%u/%u output-rect=%u/%u/%u/%u motion-rect=%u/%u/%u/%u depth-rect=%u/%u/%u/%u (CPU inputs, not texture contents or final vendor reset).",
+                event.tick, event.thread, event.pass, event.managed ? 1u : 0u, event.motion, event.depth,
+                event.temporal[0], event.temporal[1], event.temporal[2], event.temporal[3],
+                event.reset, event.host_reset, event.hdr,
+                event.rects[0], event.rects[1], event.rects[2], event.rects[3],
+                event.rects[4], event.rects[5], event.rects[6], event.rects[7],
+                event.rects[8], event.rects[9], event.rects[10], event.rects[11],
+                event.rects[12], event.rects[13], event.rects[14], event.rects[15]);
+#endif
+        }
+        else if (event.kind == nr::TraceKind::source_begin || event.kind == nr::TraceKind::source_end)
+            log_message(reshade::log::level::info,
+                "NR input trace source-%s: ms=%llu thread=%u frame=%llu source=%u hook=%u passes=%u cmd=0x%llx color=0x%llx motion=0x%llx depth=0x%llx extent=%ux%u result=0x%llx feature=0x%llx params=0x%llx.",
+                event.kind == nr::TraceKind::source_begin ? "begin" : "end",
+                event.tick, event.thread, event.frame, event.source, event.hook, event.pass,
+                event.command, event.color, event.motion, event.depth, event.width, event.height, event.result,
+                event.feature, event.parameters);
+        else if (event.kind == nr::TraceKind::queue_submit)
+            log_message(reshade::log::level::info,
+                "NR input trace pre-submit: ms=%llu thread=%u cmd=0x%llx queue=0x%llx (first submission after traced work; not completion).",
+                event.tick, event.thread, event.command, event.queue);
+        else if (event.kind == nr::TraceKind::framegen_entry)
+            log_message(reshade::log::level::info,
+                "NR input trace NGX-pre: ms=%llu thread=%u application-counter=%llu MFG-index=%u hook=%u passes=%u cmd=0x%llx native-cmd=0x%llx feature=0x%llx backbuffer=0x%llx hudless=0x%llx motion=0x%llx depth=0x%llx params=0x%llx caller-rva=0x%llx (DLSSG keys; type unverified).",
+                event.tick, event.thread, event.frame, event.mfg_index, event.hook, event.pass,
+                event.command, event.native_command, event.feature, event.color, event.output, event.motion, event.depth,
+                event.parameters, event.caller);
+        else if (event.kind == nr::TraceKind::native_return)
+            log_message(reshade::log::level::info,
+                "NR input trace NGX-post: ms=%llu thread=%u cmd=0x%llx feature=0x%llx params=0x%llx result=0x%llx nr-source=%u (vendor returned; source=0 does not prove FG).",
+                event.tick, event.thread, event.command, event.feature, event.parameters, event.result, event.source);
+#ifdef NR_FRAMEGEN_BOUNDARY_TRACE
+        else if (event.kind == nr::TraceKind::resource_tag)
+            log_message(reshade::log::level::info,
+                "NR boundary tag: ms=%llu thread=%u call=%llu token=0x%llx viewport=%u type=%u lifecycle=%u resource=0x%llx declared-state=0x%llx extent=%ux%u offset=%llu,%llu cmd=0x%llx extensions=0x%llx (pre-call; correlate tag-return; declared state is not necessarily state now).",
+                event.tick,event.thread,event.callback,event.feature,event.source,event.pass,event.hook,event.color,event.result,event.width,event.height,event.motion,event.depth,event.command,event.parameters);
+        else if (event.kind == nr::TraceKind::tag_return)
+            log_message(reshade::log::level::info,"NR boundary tag-return: ms=%llu thread=%u call=%llu result=%llu (0=success).",event.tick,event.thread,event.callback,event.result);
+        else if (event.kind == nr::TraceKind::frame_token)
+            log_message(reshade::log::level::info,"NR boundary token: ms=%llu thread=%u token=0x%llx supplied-index=%llu result=%llu (index=4294967295 means unavailable).",event.tick,event.thread,event.feature,event.frame,event.result);
+        else if (event.kind == nr::TraceKind::native_submit)
+            log_message(reshade::log::level::info,"NR boundary native-pre-submit: ms=%llu thread=%u cmd=0x%llx queue=0x%llx (identity match, not completion).",event.tick,event.thread,event.command,event.queue);
+        else if (event.kind == nr::TraceKind::native_fence)
+            log_message(reshade::log::level::info,"NR boundary native-%s: ms=%llu thread=%u queue=0x%llx fence=0x%llx value=%llu sampled-completed=%llu result=0x%llx.",event.source ? "wait" : "signal",event.tick,event.thread,event.queue,event.color,event.frame,event.output,event.result);
+#endif
         else
             log_message(reshade::log::level::info,
                 "NR FG trace %s: ms=%llu gap-ms=%llu thread=%u callback=%llu source-frame=%llu MFG-index=%u hook=%u passes=%u cmd=0x%llx color=0x%llx hudless=0x%llx original-called=%u injected=%u successful=%u result=0x%llx.",
@@ -455,6 +523,9 @@ void pump_frame_trace()
     if (emitted < 64)
     {
         log_message(reshade::log::level::info, "NR V6.6 trace END: dropped=%u (capacity/lock contention).", g_frame_trace.dropped());
+#ifdef NR_FRAMEGEN_BOUNDARY_TRACE
+        boundary_probe::report();
+#endif
         g_trace_status.store(0);
     }
 }
@@ -467,6 +538,12 @@ T &field(void *base, std::size_t offset)
 
 #include "input_controls.inl"
 #include "backends/dx12_backend.inl"
+#if defined(NR_FRAMEGEN_BOUNDARY_TRACE) || defined(NR_NESTED_SOURCE_GUARD)
+#include "framegen_hooks.inl"
+#endif
+#ifdef NR_FRAMEGEN_BOUNDARY_TRACE
+#include "framegen_boundary_probe.inl"
+#endif
 #include "framegen_probe.inl"
 void request_screenshot() { dx12::capture::request(); }
 // Retained entry for the isolated, hash-checked GPU acceptance host. The final
@@ -481,7 +558,12 @@ extern "C" __declspec(dllexport) std::uint64_t embedded_capture_parent(void *des
     auto &route = g_dispatch[source < g_dispatch.size() ? source : 0];
     route.parents.fetch_add(1, std::memory_order_relaxed);
     if (descriptor) dx12::on_init_command_list(field<reshade::api::command_list *>(descriptor,0));
+    trace_source_submission(descriptor, nr::TraceKind::source_begin);
     const auto result = dx12::capture::parent(descriptor);
+#ifdef NR_NESTED_SOURCE_GUARD
+    boundary_probe::complete_source(source,result);
+#endif
+    trace_source_submission(descriptor, nr::TraceKind::source_end, result);
     if (other_auto) g_auto_source.leave_other(GetTickCount64(),g_successful_evaluations.load()!=before);
     if ((result & 255) != 1) route.failed.fetch_add(1, std::memory_order_relaxed);
     return result;
@@ -510,10 +592,11 @@ void __fastcall draw_inline_settings(void *setting)
     // Verified section std::string at +A0. This hook runs after the previous
     // section's TreePop and immediately before the next section's TreeNodeEx.
     const auto &section = field<PresetStringView>(setting, 0xA0);
-    if (section.size != 5 || section.capacity < section.size || !section.data()) return;
-    const bool before_debug = std::memcmp(section.data(), "Debug", 5) == 0;
-    const bool before_links = std::memcmp(section.data(), "Links", 5) == 0;
-    if (!before_debug && !before_links) {
+    if (section.capacity < section.size || !section.data()) return;
+    const bool before_advanced = section.size == 8 && std::memcmp(section.data(), "Advanced", 8) == 0;
+    const bool before_debug = section.size == 5 && std::memcmp(section.data(), "Debug", 5) == 0;
+    const bool before_links = section.size == 5 && std::memcmp(section.data(), "Links", 5) == 0;
+    if (!before_advanced && !before_debug && !before_links) {
         apply_debug_section_default(section.data(), section.size);
         return;
     }
@@ -523,46 +606,121 @@ void __fastcall draw_inline_settings(void *setting)
     const auto status = nr::backends::runtime_status(
         static_cast<reshade::api::device_api>(g_runtime_api.load()),
         g_evaluation_device.observed(), g_lifetime_events_registered);
-    if (before_debug)
+    if (before_debug || before_advanced)
     {
-        int pending = g_pending_scale_percent.load(std::memory_order_relaxed);
-        const int applied = g_scale_percent.load(std::memory_order_relaxed);
-        int sharpness = g_sharpness_percent.load(std::memory_order_relaxed);
-        NeuralResolveControls resolve{g_resolve_mode.load(), g_transfer_percent.load(), g_color_percent.load()};
-        const auto edits = draw_neural_performance_section(status.controls_available, pending, applied, sharpness, &resolve);
-        if (edits.resolve_changed)
+        if (before_advanced)
         {
-            g_resolve_mode.store(std::clamp(resolve.mode, 0, 1));
-            g_transfer_percent.store(std::clamp(resolve.transfer, 0, 200));
-            g_color_percent.store(std::clamp(resolve.color, 0, 100));
-            set_config_int("RenoDXNeuralResolution", "CostResolveMode", g_resolve_mode.load());
-            set_config_int("RenoDXNeuralResolution", "CostTransferPercent", g_transfer_percent.load());
-            set_config_int("RenoDXNeuralResolution", "CostColorPercent", g_color_percent.load());
+            int motion_mode = static_cast<int>(g_multipass_motion_mode.load(std::memory_order_relaxed));
+            if (draw_multipass_motion_mode(motion_mode))
+            {
+                const auto selected = nr::clamp_multipass_motion_mode(motion_mode);
+                {
+                    ScopedLock lock(dx12::g_render_mutex);
+                    g_multipass_motion_mode.store(selected, std::memory_order_relaxed);
+                    const unsigned generation = g_stream_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+                    g_transition_generation.store(generation, std::memory_order_release);
+                    g_transition_native_frame.store(0, std::memory_order_release);
+                    g_transition_pass_mask.store(0, std::memory_order_release);
+                    g_effective_scale.store(100, std::memory_order_relaxed);
+                }
+                set_config_int("RenoDXNeuralResolution", "MultipassMotionMode",
+                    static_cast<int>(selected));
+                log_message(reshade::log::level::info,
+                    "NR multipass motion mode changed to %d; pass history will reset after the transition frame.",
+                    static_cast<int>(selected));
+            }
+            ImGui::TextWrapped("Controls motion after Pass 1. Reuse Game Motion is recommended.");
         }
-        if (edits.pending_changed) g_pending_scale_percent.store(pending, std::memory_order_relaxed);
-        if (edits.apply) set_scale(pending);
-        if (edits.sharpness_changed)
+        nr::PassControls controls;
         {
-            sharpness = std::clamp(sharpness, 0, 100);
-            g_sharpness_percent.store(sharpness, std::memory_order_relaxed);
-            set_config_int("RenoDXNeuralResolution", "SharpnessPercent", sharpness);
+            ScopedLock lock(dx12::g_render_mutex);
+            controls = g_pass_controls;
         }
-    }
-    else
-    {
-        draw_runtime_api_section(status);
+        const nr::PassResolve inherited{false, g_resolve_mode.load(), g_transfer_percent.load(),
+            g_color_percent.load(), g_sharpness_percent.load()};
+        const bool detail_available = status.controls_available &&
+            static_cast<reshade::api::device_api>(g_runtime_api.load()) == reshade::api::device_api::d3d12;
+        const bool controls_changed = before_debug &&
+            draw_neural_pass_sections(detail_available, g_observed_pass_count.load(), controls, inherited,
+                g_pass_sections, &set_config_int);
+        if (controls_changed) {
+            nr::clamp_pass_controls(controls);
+            {
+                ScopedLock lock(dx12::g_render_mutex);
+                g_pass_controls = controls;
+            }
+            nr::save_pass_controls(controls, &set_config_int);
+        }
+        if (before_advanced)
+        {
+            int pending = g_pending_scale_percent.load(std::memory_order_relaxed);
+            const int applied = g_scale_percent.load(std::memory_order_relaxed);
+            int sharpness = g_sharpness_percent.load(std::memory_order_relaxed);
+            NeuralResolveControls resolve{g_resolve_mode.load(), g_transfer_percent.load(), g_color_percent.load()};
+            const bool detail_changed = draw_neural_detail_section(detail_available, resolve, sharpness);
+            const auto edits = draw_neural_performance_section(status.controls_available, pending, applied, &resolve,
+                detail_available ? g_effective_scale.load(std::memory_order_relaxed) : 0);
+            if (detail_changed || edits.resolve_changed)
+            {
+                resolve.transfer = std::clamp(resolve.transfer, 0, 200);
+                resolve.color = std::clamp(resolve.color, 0, nr::maximum_color_percent);
+                sharpness = std::clamp(sharpness, 0, 100);
+                {
+                    ScopedLock lock(dx12::g_render_mutex);
+                    const bool path_changed = nr::uses_base_resolve(g_transfer_percent.load(), g_color_percent.load(),
+                        g_sharpness_percent.load()) != nr::uses_base_resolve(resolve.transfer, resolve.color, sharpness);
+                    g_resolve_mode.store(std::clamp(resolve.mode, 0, 1));
+                    g_transfer_percent.store(resolve.transfer);
+                    g_color_percent.store(resolve.color);
+                    g_sharpness_percent.store(sharpness);
+                    if (path_changed) {
+                        // Reuse the existing fence-safe native/working-path transition.
+                        const auto allocation = g_scale_generation.fetch_add(1) + 1;
+                        const auto stream = g_stream_generation.fetch_add(1) + 1;
+                        g_transition_generation.store(stream);
+                        g_transition_native_frame.store(0); g_transition_pass_mask.store(0);
+                        g_quiesce_generation.store(allocation);
+                    }
+                }
+                set_config_int("RenoDXNeuralResolution", "CostResolveMode", g_resolve_mode.load());
+                set_config_int("RenoDXNeuralResolution", "CostTransferPercent", g_transfer_percent.load());
+                set_config_int("RenoDXNeuralResolution", "CostColorPercent", g_color_percent.load());
+                set_config_int("RenoDXNeuralResolution", "SharpnessPercent", sharpness);
+            }
+            if (edits.pending_changed) g_pending_scale_percent.store(pending, std::memory_order_relaxed);
+            if (edits.apply) set_scale(pending);
+        }
+        else
+        {
         draw_input_controls();
-        if (ImGui::Button("Capture Dawnwalker trace")) g_trace_requested.store(true);
+        if (ImGui::Button("Capture FrameGen input trace")) g_trace_requested.store(true);
         const unsigned capture_status = dx12::capture::status.load();
         constexpr const char *messages[] = {"", "Screenshot armed...", "Screenshot awaiting GPU completion...",
             "Writing screenshots...", "Screenshot pair saved.", "Screenshot unavailable/failed; see ReShade.log."};
         if (capture_status > 0 && capture_status < std::size(messages)) ImGui::TextWrapped("%s", messages[capture_status]);
         if (capture_status == 5) ImGui::TextWrapped("%s", dx12::capture::failure.load());
+        }
     }
+    else draw_runtime_api_section(status);
     ImGui::EndGroup();
     // Set the default only AFTER our own widgets, so the upcoming native section
     // node consumes it, not the Performance separator or a slider.
     apply_debug_section_default(section.data(), section.size);
+}
+
+bool __fastcall draw_native_slider_reset(void *setting)
+{
+    if (!setting || !g_target_module || field<std::uint8_t>(setting, 0x38) > 2 ||
+        field<std::uint8_t>(setting, 0x78) == 0 ||
+        field<int>(g_target_module, kPresetIndexRva) == 0)
+        return false;
+
+    int ignored = 0;
+    if (!draw_slider_reset_context_menu(ignored, 0)) return false;
+    const float default_value = field<float>(setting, 0x3C);
+    field<float>(setting, 0x384) = default_value;
+    field<int>(setting, 0x388) = static_cast<int>(default_value);
+    return true;
 }
 
 extern "C" __declspec(dllexport) std::uint64_t __fastcall scaled_evaluate_create(void *input)
@@ -588,6 +746,9 @@ void uninstall_hook()
 void on_init_device(reshade::api::device *device)
 {
     if (device == nullptr) return;
+#ifdef NR_NESTED_SOURCE_GUARD
+    if (device->get_api() == reshade::api::device_api::d3d12) boundary_probe::install_evaluation_hook();
+#endif
 #ifdef NR_EXPERIMENTAL_DX11
     if (device->get_api() == reshade::api::device_api::d3d11) dx11_native::start_discovery();
 #endif
@@ -855,6 +1016,13 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
         vulkan_native::install_get_proc_address_hook();
 #endif
     probe_optional_xefg_path();
+#if defined(NR_NESTED_SOURCE_GUARD) && !defined(NR_FRAMEGEN_BOUNDARY_TRACE)
+    if (runtime && runtime->get_device()->get_api() == reshade::api::device_api::d3d12)
+        boundary_probe::install_evaluation_hook();
+#endif
+#ifdef NR_FRAMEGEN_BOUNDARY_TRACE
+    boundary_probe::install(runtime);
+#endif
     pump_frame_trace();
     observe_stream_configuration();
     dx12::maintain_resources();
@@ -1078,6 +1246,11 @@ extern "C" __declspec(dllexport) void embedded_draw_inline_settings(void *settin
     draw_inline_settings(setting);
 }
 
+extern "C" __declspec(dllexport) bool embedded_draw_native_slider_reset(void *setting)
+{
+    return draw_native_slider_reset(setting);
+}
+
 extern "C" __declspec(dllexport) void embedded_on_init_device(reshade::api::device *device)
 {
     on_init_device(device);
@@ -1117,7 +1290,11 @@ extern "C" __declspec(dllexport) bool observed_evaluation_gate(
     using GateFunction = bool (__fastcall *)(std::uint64_t, std::uint8_t, bool);
     const auto original = reinterpret_cast<GateFunction>(
         reinterpret_cast<std::uintptr_t>(g_target_module) + 0x0B1F40);
-    const bool allowed = !(source != 1 && auto_source_enabled() && g_auto_source.fallback())
+    const bool allowed =
+#ifdef NR_NESTED_SOURCE_GUARD
+        !boundary_probe::reject_duplicate(source,owned_retry) &&
+#endif
+        !(source != 1 && auto_source_enabled() && g_auto_source.fallback())
         && original(frame, source, owned_retry);
     auto &route = g_dispatch[source < g_dispatch.size() ? source : 0];
     route.calls.fetch_add(1, std::memory_order_relaxed);
@@ -1155,7 +1332,37 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
-#ifdef NR_EXPERIMENTAL_VULKAN
+#if defined(NR_SLIDER_RESET_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.6: right-click slider reset, 100% color defaults, and 0-200% color controls.";
+#elif defined(NR_MOTION_RUNTIME_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.5: selectable multipass motion modes; game motion reuse is the recommended default.";
+#elif defined(NR_PASS_CONTROLS_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.3-manager-release.3: independent pass controls and complete-group transitions; Cyberpunk shimmer remains unresolved.";
+#elif defined(NR_PASS_HISTORY_FIX)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.3-pass-controls.10-history.1: neutral first-pass transition fix; shimmer remains under investigation.";
+#elif defined(NR_PASS_INPUT_TRACE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.3-pass-controls.9-input-trace.1: preview 9 rendering; manual per-pass CPU metadata diagnostics only.";
+#elif defined(NR_PASS_CONTROLS_PREVIEW)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.3-pass-controls.9: local preview; independent spatial sharpening and history reset after interrupted passes.";
+#elif defined(NR_INTEGRATED_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.3-framegen-upstream.4: stable multipass and scoped native-SR return deduplication.";
+#elif defined(NR_NESTED_SOURCE_GUARD)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "1.0.3-tlou2-nested-source.1: scoped duplicate native-SR return guard; candidate, not game-validated.";
+#elif defined(NR_FRAMEGEN_BOUNDARY_TRACE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "1.0.3-tlou2-boundary-trace.2: existing tag-chain observers and independent native queue diagnostics; no image capture.";
+#elif defined(NR_FRAMEGEN_INPUT_TRACE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "1.0.3-tlou2-input-trace.2: upstream.3 rendering with correlated NGX input diagnostics.";
+#elif defined(NR_EXPERIMENTAL_VULKAN)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 1.0.3-framegen-upstream.3 with stable scale admission and ordinal-safe Vulkan lookup.";
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
@@ -1173,6 +1380,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     case DLL_PROCESS_ATTACH:
     {
         g_framegen_transition_tls = TlsAlloc();
+#ifdef NR_FRAMEGEN_INPUT_TRACE
+        g_source_trace_tls = TlsAlloc();
+#endif
         InitializeCriticalSection(&dx12::g_render_mutex);
         dx12::g_render_mutex_initialized = true;
         g_target_module = module;
@@ -1204,7 +1414,29 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-#ifdef NR_EXPERIMENTAL_VULKAN
+#if defined(NR_SLIDER_RESET_RELEASE)
+            "NR BUILD ID: 1.0.6-slider-reset.1 module=%s config-schema=9.",
+#elif defined(NR_MOTION_RUNTIME_RELEASE)
+            "NR BUILD ID: 1.0.5-motion-runtime.1 module=%s config-schema=9.",
+#elif defined(NR_PASS_CONTROLS_RELEASE)
+            "NR BUILD ID: 1.0.3-manager-release.3 module=%s config-schema=8.",
+#elif defined(NR_PASS_HISTORY_FIX)
+            "NR BUILD ID: 1.0.3-pass-controls.10-history.1 module=%s config-schema=8.",
+#elif defined(NR_PASS_INPUT_TRACE)
+            "NR BUILD ID: 1.0.3-pass-controls.9-input-trace.1 module=%s config-schema=8.",
+#elif defined(NR_PASS_CONTROLS_PREVIEW)
+            "NR BUILD ID: 1.0.3-pass-controls.9 module=%s config-schema=8.",
+#elif defined(NR_INTEGRATED_RELEASE)
+            "NR BUILD ID: 1.0.3-framegen-upstream.4 module=%s config-schema=7.",
+#elif defined(NR_FRAMEGEN_BOUNDARY_TRACE)
+#ifdef NR_NESTED_SOURCE_GUARD
+            "NR BUILD ID: 1.0.3-tlou2-nested-source.1 module=%s config-schema=7.",
+#else
+            "NR BUILD ID: 1.0.3-tlou2-boundary-trace.2 module=%s config-schema=7.",
+#endif
+#elif defined(NR_FRAMEGEN_INPUT_TRACE)
+            "NR BUILD ID: 1.0.3-tlou2-input-trace.2 module=%s config-schema=7.",
+#elif defined(NR_EXPERIMENTAL_VULKAN)
             "NR BUILD ID: 1.0.3-framegen-upstream.3 module=%s config-schema=7.",
 #elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
             "NR BUILD ID: 1.0.3-dawnwalker-no-copyback.2 module=%s config-schema=7.",
@@ -1221,7 +1453,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         log_message(reshade::log::level::info,
             "NR ATTACH ORDER 1: NGX/Streamline already-loaded=%u; existing evaluations remain supported, but create-time overrides may require recreating the game's DLSS feature.",
             ngx_already_loaded ? 1u : 0u);
-        set_config_int("RenoDXNeuralResolution", "ConfigSchema", 7);
+        set_config_int("RenoDXNeuralResolution", "ConfigSchema", 9);
         imgui_function_table_instance() =
             *reinterpret_cast<const imgui_function_table **>(
                 reinterpret_cast<std::uintptr_t>(module) + kImguiTableRva);
@@ -1232,7 +1464,17 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         get_config_int("RenoDXNeuralResolution", "CostColorPercent", configured_color);
         g_resolve_mode.store(std::clamp(configured_resolve, 0, 1));
         g_transfer_percent.store(std::clamp(configured_transfer, 0, 200));
-        g_color_percent.store(std::clamp(configured_color, 0, 100));
+        g_color_percent.store(std::clamp(configured_color, 0, nr::maximum_color_percent));
+        int configured_motion = static_cast<int>(nr::MultipassMotionMode::reuse_game_motion);
+        get_config_int("RenoDXNeuralResolution", "MultipassMotionMode", configured_motion);
+        g_multipass_motion_mode.store(nr::clamp_multipass_motion_mode(configured_motion));
+        nr::load_pass_controls(g_pass_controls, &get_config_int);
+        nr::load_pass_sections(g_pass_sections, &get_config_int);
+        unsigned customized_passes = 0;
+        for (const auto &pass : g_pass_controls.extra) customized_passes += pass.enabled ? 1u : 0u;
+        log_message(reshade::log::level::info,
+            "NR pass controls: retired-detail=%d%% retired-coupling=%d%% restored-extra-passes=%u; independent DX12 pass controls, default color=100%% sharpness=0%%.",
+            g_pass_controls.detail, g_pass_controls.coupling, customized_passes);
         log_text(reshade::log::level::info,
             "NR COST SCALER 2: 25-150% internal NR scaling, native 100% bypass, matched residual/direct, fence-retired native anchors.");
         log_text(reshade::log::level::info,
@@ -1240,7 +1482,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         log_text(reshade::log::level::info,
             "NR FG UPSTREAM 1: FrameGen callbacks are observation-only; NR runs once per source frame on the native SR output.");
         load_control_keys();
-        int configured_sharpness = 35;
+        int configured_sharpness = 0;
         // Migrate even saved V6.3=true configurations away from unsafe replay.
         set_config_int("RenoDXNeuralResolution", "XeFGNativeInputCompatibility", 0);
         if (get_config_int("RenoDXNeuralResolution", "SharpnessPercent", configured_sharpness) ||
@@ -1297,7 +1539,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         log_text(reshade::log::level::info,
             "NR UI REVISION 3: Performance before Debug; Runtime API collapsed by default; obsolete diagnostic controls removed. Rendering backend unchanged.");
         log_text(reshade::log::level::info,
-            "NR UI REVISION 4: Reconstruction Sharpness disabled at applied resolution 100%; saved sharpness retained.");
+            "NR UI: independent per-pass transfer, color and sharpness at every resolution; compact controls at native resolution.");
         log_text(reshade::log::level::info,
             "NR CAPTURE TEST 3: scoped no-codec capture; rebindable F6 toggle, F7 presets, F5 NR pair, pass +/-; PNG only.");
         log_text(reshade::log::level::info,
@@ -1360,6 +1602,13 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             TlsFree(g_framegen_transition_tls);
             g_framegen_transition_tls = TLS_OUT_OF_INDEXES;
         }
+#ifdef NR_FRAMEGEN_INPUT_TRACE
+        if (g_source_trace_tls != TLS_OUT_OF_INDEXES)
+        {
+            TlsFree(g_source_trace_tls);
+            g_source_trace_tls = TLS_OUT_OF_INDEXES;
+        }
+#endif
         break;
     }
     return TRUE;

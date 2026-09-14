@@ -20,6 +20,13 @@ public:
             if (!entry.device) { entry = {device, pass, 0}; return &entry; }
         return nullptr;
     }
+    // A bypassed/suppressed pass changes the input seen by all later passes.
+    // Invalidate history without releasing features or touching GPU ownership.
+    constexpr void invalidate_from(std::uintptr_t device, unsigned pass)
+    {
+        for (auto &entry : entries_)
+            if (entry.device == device && entry.pass >= pass) entry.generation = 0;
+    }
     constexpr void forget(std::uintptr_t device)
     {
         for (auto &entry : entries_) if (entry.device == device) entry = {};

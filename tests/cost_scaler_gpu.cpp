@@ -11,6 +11,8 @@
 #include <vector>
 #include <algorithm>
 #include <bit>
+#include <fstream>
+#include <iterator>
 #include "../src/neural_resample_shader.hpp"
 using Microsoft::WRL::ComPtr;
 static void check(HRESULT hr) { if (FAILED(hr)) { printf("HRESULT %08lx\n",hr); ExitProcess(2); } }
@@ -24,9 +26,11 @@ struct GPU {
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
+    ComPtr<ID3D12RootSignature> baseline_root;
+    ComPtr<ID3D12PipelineState> baseline_pipeline;
     ComPtr<ID3D12DescriptorHeap> heap;
     UINT stride; UINT64 serial=0;
-    GPU(bool warp) {
+    GPU(bool warp, const char *baseline = nullptr) {
         ComPtr<IDXGIFactory4> factory; check(CreateDXGIFactory2(0,IID_PPV_ARGS(&factory)));
         ComPtr<IDXGIAdapter> adapter;
         if (warp) check(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)));
@@ -38,6 +42,13 @@ struct GPU {
         check(device->CreateRootSignature(0,g_neural_resample_shader,g_neural_resample_shader_size,IID_PPV_ARGS(&root)));
         D3D12_COMPUTE_PIPELINE_STATE_DESC p={}; p.pRootSignature=root.Get(); p.CS={g_neural_resample_shader,g_neural_resample_shader_size};
         check(device->CreateComputePipelineState(&p,IID_PPV_ARGS(&pipeline)));
+        if (baseline) {
+            std::ifstream file(baseline, std::ios::binary); assert(file);
+            std::vector<char> bytes((std::istreambuf_iterator<char>(file)), {}); assert(!bytes.empty());
+            check(device->CreateRootSignature(0, bytes.data(), bytes.size(), IID_PPV_ARGS(&baseline_root)));
+            p.pRootSignature = baseline_root.Get(); p.CS = {bytes.data(), bytes.size()};
+            check(device->CreateComputePipelineState(&p, IID_PPV_ARGS(&baseline_pipeline)));
+        }
         D3D12_DESCRIPTOR_HEAP_DESC hd={}; hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors=4; hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         check(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&heap))); stride=device->GetDescriptorHandleIncrementSize(hd.Type);
     }
@@ -78,7 +89,7 @@ struct GPU {
         void *data; check(b->Map(0,nullptr,&data)); std::vector<Pixel> pixels(t.w*t.h);
         for(unsigned y=0;y<t.h;++y) memcpy(pixels.data()+y*t.w,static_cast<char*>(data)+y*fp.Footprint.RowPitch,t.w*sizeof(Pixel)); b->Unmap(0,nullptr); return pixels;
     }
-    void dispatch(Texture &source,Texture &dest,Texture &input,Texture &native,unsigned mode,unsigned sx,unsigned sy,unsigned sw,unsigned sh,unsigned dw,unsigned dh,float sharp=0,float transfer=1,float color=1,unsigned dx=0,unsigned dy=0) {
+    void dispatch(Texture &source,Texture &dest,Texture &input,Texture &native,unsigned mode,unsigned sx,unsigned sy,unsigned sw,unsigned sh,unsigned dw,unsigned dh,float sharp=0,float transfer=1,float color=1,unsigned dx=0,unsigned dy=0,float detail=1,float coupling=0,bool baseline=false) {
         Texture *textures[]={&source,&dest,&input,&native}; auto cpu=heap->GetCPUDescriptorHandleForHeapStart();
         for(unsigned i=0;i<4;++i) {
             D3D12_CPU_DESCRIPTOR_HANDLE h{cpu.ptr+i*stride};
@@ -86,17 +97,17 @@ struct GPU {
             else { D3D12_SHADER_RESOURCE_VIEW_DESC v={}; v.Format=DXGI_FORMAT_R32G32B32A32_FLOAT; v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; v.Texture2D.MipLevels=1; device->CreateShaderResourceView(textures[i]->resource.Get(),&v,h); }
         }
         begin(); barrier(dest.resource.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        ID3D12DescriptorHeap *heaps[]={heap.Get()}; list->SetDescriptorHeaps(1,heaps); list->SetPipelineState(pipeline.Get()); list->SetComputeRootSignature(root.Get());
+        ID3D12DescriptorHeap *heaps[]={heap.Get()}; list->SetDescriptorHeaps(1,heaps); list->SetPipelineState(baseline ? baseline_pipeline.Get() : pipeline.Get()); list->SetComputeRootSignature(baseline ? baseline_root.Get() : root.Get());
         auto gpu=heap->GetGPUDescriptorHandleForHeapStart(); unsigned roots[]={0,1,3,4};
         for(unsigned i=0;i<4;++i) list->SetComputeRootDescriptorTable(roots[i],{gpu.ptr+i*stride});
-        unsigned constants[]={sx,sy,sw,sh,dw,dh,mode,std::bit_cast<unsigned>(sharp),dx,dy,std::bit_cast<unsigned>(transfer),std::bit_cast<unsigned>(color)};
-        list->SetComputeRoot32BitConstants(2,12,constants,0); list->Dispatch((dw+7)/8,(dh+7)/8,1);
+        unsigned constants[]={sx,sy,sw,sh,dw,dh,mode,std::bit_cast<unsigned>(sharp),dx,dy,std::bit_cast<unsigned>(transfer),std::bit_cast<unsigned>(color),std::bit_cast<unsigned>(detail),std::bit_cast<unsigned>(coupling)};
+        list->SetComputeRoot32BitConstants(2,baseline ? 12 : 14,constants,0); list->Dispatch((dw+7)/8,(dh+7)/8,1);
         barrier(dest.resource.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE); finish();
     }
 };
 static bool near(float a,float b) { return std::abs(a-b)<0.00003f; }
-int main(int argc,char **) {
-    GPU gpu(argc>1); unsigned cases=0;
+int main(int argc,char **argv) {
+    GPU gpu(argc>1 && std::strcmp(argv[1], "warp") == 0, argc>2 ? argv[2] : nullptr); unsigned cases=0;
     for(float brightness : {0.5f,8.f}) {
         constexpr unsigned w=64,h=48;
         auto source=gpu.texture(w+2,h+2), native=gpu.texture(w,h), destination=gpu.texture(w+6,h+4);
@@ -105,7 +116,7 @@ int main(int argc,char **) {
         gpu.upload(source,pixels); gpu.dispatch(source,native,source,source,2,1,1,w,h,w,h);
         const auto anchor=gpu.read(native);
         for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) assert(memcmp(&anchor[y*w+x],&pixels[(y+1)*(w+2)+x+1],sizeof(Pixel))==0);
-        for(unsigned scale : {25u,33u,50u,75u,99u,101u,125u,150u}) {
+        for(unsigned scale : {25u,33u,50u,75u,99u,100u,101u,125u,150u}) {
             unsigned sw=std::max(2u,((w*scale+50)/100)&~1u),sh=std::max(2u,((h*scale+50)/100)&~1u);
             auto input=gpu.texture(sw,sh),output=gpu.texture(sw,sh);
             gpu.dispatch(native,input,native,native,scale>100?3:0,0,0,w,h,sw,sh);
@@ -116,12 +127,17 @@ int main(int argc,char **) {
                     sum+=anchor[j*w+i].r*(std::min(x1,double(i+1))-std::max(x0,double(i)))*(std::min(y1,double(j+1))-std::max(y0,double(j)));
                 assert(near(low[y*sw+x].r,float(sum/((x1-x0)*(y1-y0)))));
             }
-            for(unsigned mode : {1u,4u}) for(float transfer : {0.f,1.f,2.f}) for(float color : {0.f,1.f}) for(float delta : {0.f,.02f}) {
+            for(unsigned mode : {1u,4u}) for(float transfer : {0.f,1.f,2.f}) for(float color : {0.f,1.f,2.f}) for(float delta : {0.f,.02f}) {
                 auto neural=low; for(auto &p:neural) { p.r+=delta; p.g+=delta; p.b+=delta; }
                 gpu.upload(output,neural);
                 std::vector<Pixel> sentinel(destination.w*destination.h,{-9,-9,-9,-9}); gpu.upload(destination,sentinel);
                 gpu.dispatch(output,destination,input,native,mode,0,0,sw,sh,w,h,0,transfer,color,3,2);
                 const auto result=gpu.read(destination);
+                if (gpu.baseline_pipeline) {
+                    gpu.dispatch(output,destination,input,native,mode,0,0,sw,sh,w,h,0,transfer,color,3,2,1,0,true);
+                    const auto previous = gpu.read(destination);
+                    assert(std::memcmp(result.data(), previous.data(), result.size()*sizeof(Pixel)) == 0);
+                }
                 for(unsigned y=0;y<destination.h;++y) for(unsigned x=0;x<destination.w;++x) {
                     const auto &p=result[y*destination.w+x];
                     if(x<3||x>=w+3||y<2||y>=h+2) { assert(p.r==-9&&p.a==-9); continue; }
@@ -132,11 +148,18 @@ int main(int argc,char **) {
             }
             gpu.dispatch(output,destination,input,native,1,0,0,sw,sh,w,h,1,1,1,3,2);
             const auto sharp=gpu.read(destination); assert(!near(sharp[2*destination.w+3].r,anchor[0].r+.02f));
+            if (gpu.baseline_pipeline) {
+                gpu.dispatch(output,destination,input,native,1,0,0,sw,sh,w,h,1,1,1,3,2,1,0,true);
+                const auto previous = gpu.read(destination);
+                assert(std::memcmp(sharp.data(),previous.data(),sharp.size()*sizeof(Pixel)) == 0);
+            }
             // A colored edit must respond to ColorStrength, not just grayscale deltas.
             auto tinted=low; for(auto &p:tinted) { p.r+=.04f; p.g-=.01f; p.b+=.02f; }
             gpu.upload(output,tinted);
-            for(float color : {0.f,.5f,1.f}) {
-                gpu.dispatch(output,destination,input,native,1,0,0,sw,sh,w,h,0,1,color,3,2);
+            for (unsigned tint_mode : {1u,4u}) {
+            if (tint_mode == 4 && scale != 100) continue;
+            for(float color : {0.f,.5f,1.f,2.f}) {
+                gpu.dispatch(output,destination,input,native,tint_mode,0,0,sw,sh,w,h,0,1,color,3,2);
                 const auto result=gpu.read(destination);
                 const float deltaY=.04f*.2126f-.01f*.7152f+.02f*.0722f;
                 for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {
@@ -145,6 +168,15 @@ int main(int argc,char **) {
                     assert(near(p.g,base.g+deltaY+(-.01f-deltaY)*color));
                     assert(near(p.b,base.b+deltaY+(.02f-deltaY)*color));
                 }
+                ++cases;
+            }
+            }
+            if (scale == 100) {
+                gpu.dispatch(output,destination,input,native,4,0,0,sw,sh,w,h,0,1,1,3,2);
+                const auto unsharpened = gpu.read(destination);
+                gpu.dispatch(output,destination,input,native,4,0,0,sw,sh,w,h,1,1,1,3,2);
+                const auto sharpened = gpu.read(destination);
+                assert(!near(unsharpened[2*destination.w+3].r,sharpened[2*destination.w+3].r));
                 ++cases;
             }
         }
@@ -160,4 +192,130 @@ int main(int argc,char **) {
         ++cases;
     }
     printf("PASS: %u GPU resolves; 25-150%% input/resolve paths, explicit zero-fill motion, reduced-scale area reference, supersample area resolve, transfer/color, SDR/HDR signed values, alpha, subrect sentinels, sharpening. Production DXIL; no NR model.\n",cases);
+    // Sequential passes: later controls operate on, and preserve, earlier
+    // results. Synthetic neural deltas isolate resolve behavior from the model.
+    for (unsigned scale : {75u,100u,125u}) for (unsigned enabled = 0; enabled < 8; ++enabled) {
+        constexpr unsigned w=16,h=16;
+        const unsigned sw=w*scale/100, sh=h*scale/100;
+        auto anchor=gpu.texture(w,h), input=gpu.texture(sw,sh), output=gpu.texture(sw,sh), result=gpu.texture(w,h);
+        Pixel expected{.2f,.3f,.4f,.37f};
+        std::vector<Pixel> image(w*h,expected);
+        for (unsigned pass=0;pass<3;++pass) {
+            gpu.upload(anchor,image);
+            gpu.dispatch(anchor,input,anchor,anchor,scale>100?3:0,0,0,w,h,sw,sh);
+            auto neural=gpu.read(input);
+            const float dr=.01f*(pass+1),dg=-.005f,db=.02f;
+            for(auto &p:neural) { p.r+=dr;p.g+=dg;p.b+=db; }
+            gpu.upload(output,neural);
+            const float transfer=(enabled&(1u<<pass))?1.f:0.f, color=.25f*pass;
+            gpu.dispatch(output,result,input,anchor,scale==100 && pass==0?4:1,0,0,sw,sh,w,h,0,transfer,color);
+            image=gpu.read(result);
+            const float dy=dr*.2126f+dg*.7152f+db*.0722f;
+            expected.r+=(dy+(dr-dy)*color)*transfer;
+            expected.g+=(dy+(dg-dy)*color)*transfer;
+            expected.b+=(dy+(db-dy)*color)*transfer;
+            for(const auto &p:image) assert(near(p.r,expected.r)&&near(p.g,expected.g)&&near(p.b,expected.b)&&p.a==expected.a);
+        }
+    }
+    puts("PASS: 24 three-pass chains at 75/100/125%, independent transfer/color and exact earlier-pass preservation with later transfer zero.");
+    // Read back the final chain, varying exactly one control on exactly one
+    // pass. Non-flat inputs ensure a sharpness no-op cannot pass this check.
+    for (unsigned scale : {25u,70u,99u,100u,101u,125u,150u})
+        for (unsigned changed_pass=0;changed_pass<3;++changed_pass)
+            for (unsigned knob=0;knob<3;++knob) {
+                auto chain = [&](bool changed) {
+                    constexpr unsigned w=32,h=32;
+                    const unsigned sw=std::max(2u,(w*scale/100)&~1u), sh=sw;
+                    auto anchor=gpu.texture(w,h), input=gpu.texture(sw,sh), output=gpu.texture(sw,sh), result=gpu.texture(w,h);
+                    std::vector<Pixel> image(w*h);
+                    for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x)
+                        image[y*w+x]={.2f+.1f*float((x/4+y/4)%2),.3f+.03f*float(x%5),.4f,.37f};
+                    for(unsigned pass=0;pass<3;++pass) {
+                        gpu.upload(anchor,image);
+                        gpu.dispatch(anchor,input,anchor,anchor,scale>100?3:0,0,0,w,h,sw,sh);
+                        auto neural=gpu.read(input);
+                        for(auto &p:neural) { p.r+=.02f;p.g-=.01f;p.b+=.04f; }
+                        gpu.upload(output,neural);
+                        const bool edit=changed && pass==changed_pass;
+                        // At native resolution use the same anchor as both
+                        // input and reference, just like the compact backend.
+                        gpu.dispatch(output,result,scale==100?anchor:input,anchor,pass==0 && scale==100?4:1,
+                            0,0,sw,sh,w,h,edit && knob==2?.8f:0,edit && knob==0?.2f:1,edit && knob==1?2.f:.5f);
+                        image=gpu.read(result);
+                    }
+                    return image;
+                };
+                auto before=chain(false), after=chain(true);
+                bool differs=false;
+                for(std::size_t i=0;i<before.size();++i) {
+                    assert(before[i].a==after[i].a);
+                    differs |= !near(before[i].r,after[i].r) || !near(before[i].g,after[i].g) || !near(before[i].b,after[i].b);
+                }
+                assert(differs);
+            }
+    puts("PASS: 63 final-image comparisons: each transfer/color/sharpness control on each of three passes at 25/70/99/100/101/125/150%, including 200% color.");
+    // Zero colour must not let sharpening reintroduce changing NR chroma.
+    // Zero transfer must still allow the independent spatial sharpness slider.
+    unsigned sharpness_failures=0;
+    for(unsigned mode : {1u,4u}) for(float brightness : {1.f,8.f}) {
+        constexpr unsigned w=16,h=16;
+        auto native=gpu.texture(w,h), output=gpu.texture(w,h), destination=gpu.texture(w,h);
+        std::vector<Pixel> anchor(w*h);
+        for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {
+            const float v=(.3f+.01f*((x+y)%2))*brightness;
+            anchor[y*w+x]={v,v,v,.37f};
+        }
+        gpu.upload(native,anchor);
+        std::vector<Pixel> prior;
+        for(float phase : {-1.f,1.f}) {
+            auto neural=anchor;
+            for(unsigned i=0;i<neural.size();++i) {
+                const float delta=phase*((i+i/w)%2?1.f:-1.f)*.04f*brightness;
+                neural[i].r+=delta; neural[i].g-=delta*.2126f/.7152f;
+            }
+            gpu.upload(output,neural);
+            gpu.dispatch(output,destination,native,native,mode,0,0,w,h,w,h,.25f,1,0);
+            const auto result=gpu.read(destination);
+            bool stable=true;
+            for(unsigned i=0;i<result.size();++i) {
+                stable &= near(result[i].r,result[i].g) && near(result[i].g,result[i].b);
+                if(!prior.empty()) stable &= near(result[i].r,prior[i].r) && near(result[i].g,prior[i].g) && near(result[i].b,prior[i].b);
+                assert(result[i].a==anchor[i].a);
+            }
+            if(!stable) { printf("FAIL: sharpening restored rejected temporal chroma mode=%u HDR=%g\n",mode,brightness); ++sharpness_failures; }
+            prior=result;
+        }
+        gpu.dispatch(output,destination,native,native,mode,0,0,w,h,w,h,.25f,0,0);
+        const auto independent=gpu.read(destination);
+        bool changed=false;
+        for(unsigned i=0;i<independent.size();++i) changed |= !near(independent[i].r,anchor[i].r);
+        if(!changed) { printf("FAIL: zero transfer disabled independent sharpening mode=%u HDR=%g\n",mode,brightness); ++sharpness_failures; }
+    }
+    if(sharpness_failures) return 30;
+    puts("PASS: SDR/HDR temporal-chroma rejection with 25% sharpening; zero-transfer sharpening remains independent in both resolve modes.");
+    {
+        auto input = gpu.texture(4,4), output = gpu.texture(4,4), destination = gpu.texture(4,4);
+        for (Pixel base : {Pixel{.2f,.4f,.1f,.37f}, Pixel{2.f,4.f,-.1f,.37f}, Pixel{0,0,0,.37f}}) {
+            const Pixel neural{base.r+.12f,base.g+.04f,base.b-.01f,.9f};
+            gpu.upload(input,std::vector<Pixel>(16,base)); gpu.upload(output,std::vector<Pixel>(16,neural));
+            gpu.dispatch(output,destination,input,input,4,0,0,4,4,4,4);
+            const auto normal = gpu.read(destination)[0];
+            for (float detail : {0.f,.5f,1.f,1.5f,2.f}) for (float coupling : {0.f,1.f,3.f}) {
+                gpu.dispatch(output,destination,input,input,4,0,0,4,4,4,4,0,1,1,0,0,detail,coupling);
+                const auto result = gpu.read(destination)[0];
+                assert(result.a == base.a && std::isfinite(result.r) && std::isfinite(result.g) && std::isfinite(result.b));
+                if (detail == 0) assert(std::memcmp(&result,&base,sizeof(Pixel)) == 0);
+                if (detail == 1) assert(std::memcmp(&result,&normal,sizeof(Pixel)) == 0);
+                if (detail > 1 && coupling == 0) {
+                    assert(near(result.r*normal.g,result.g*normal.r));
+                    assert(near(result.b*normal.g,result.g*normal.b));
+                }
+                if (detail > 1 && coupling == 1) {
+                    assert(near(result.r,base.r+(normal.r-base.r)*detail));
+                    assert(near(result.g,base.g+(normal.g-base.g)*detail));
+                }
+            }
+        }
+        puts("PASS: 45 detail/coupling cases: exact neutral/zero, hue ratios, RGB coupling, black and signed HDR. Baseline comparison enabled when a shader path is supplied.");
+    }
 }
