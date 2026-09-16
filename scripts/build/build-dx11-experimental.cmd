@@ -131,9 +131,20 @@ if /i "%~1"=="manager-release-1.0.6" (
  set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
  if not exist "%ROOT%build\manager-1.0.6-addon" mkdir "%ROOT%build\manager-1.0.6-addon" || exit /b 1
 )
+if /i "%~1"=="manager-release-1.0.8" (
+ set "NR_OUTPUT=%ROOT%build\manager-1.0.8-addon\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan --multipass-edge-release --addon-version 1.0.8"
+ set "NR_PATCH_FLAGS=--addon-build 18 --addon-version 1.0.8 --release-version"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ if not exist "%ROOT%build\manager-1.0.8-addon" mkdir "%ROOT%build\manager-1.0.8-addon" || exit /b 1
+)
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe" /nologo /T cs_6_0 /E Resample /Fo "%ROOT%build\neural_resample_v66.cso" "%ROOT%src\neural_resample.hlsl" || exit /b 1
 python "%ROOT%tools\binary_to_header.py" "%ROOT%build\neural_resample_v66.cso" "%ROOT%src\neural_resample_shader.hpp" g_neural_resample_shader || exit /b 1
+"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe" /nologo /D NR_EDGE_DEPTH=1 /T cs_6_0 /E Resample /Fo "%ROOT%build\neural_resample_edge_v66.cso" "%ROOT%src\neural_resample.hlsl" || exit /b 1
+python "%ROOT%tools\binary_to_header.py" "%ROOT%build\neural_resample_edge_v66.cso" "%ROOT%src\neural_resample_edge_shader.hpp" g_neural_resample_edge_shader || exit /b 1
 "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe" /nologo /T cs_5_0 /E main /O3 /Fo "%ROOT%build\screenshot_copy.cso" "%ROOT%src\screenshot_copy.hlsl" || exit /b 1
 python "%ROOT%tools\binary_to_header.py" "%ROOT%build\screenshot_copy.cso" "%ROOT%src\screenshot_copy_shader.hpp" g_screenshot_copy_shader || exit /b 1
 "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe" /nologo /T cs_5_0 /E main /O3 /Fo "%ROOT%build\dx11_depth_convert.cso" "%ROOT%src\dx11_depth_convert.hlsl" || exit /b 1
@@ -171,5 +182,6 @@ if /i "%~1"=="pass-history-fix" call "%ROOT%scripts\test\test-vulkan-export-look
 if /i "%~1"=="manager-release-1.0.3" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.0.5" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.0.6" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
+if /i "%~1"=="manager-release-1.0.8" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 copy /y "%ROOT%build\minhook-api\LICENSE.txt" "%ROOT%build\dx11-experimental-minhook-LICENSE.txt" >nul || exit /b 1
 endlocal

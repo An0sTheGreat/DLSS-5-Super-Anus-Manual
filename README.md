@@ -4,7 +4,7 @@ An experimental 64-bit ReShade add-on that extends RenoDX DLSS with practical
 DLSS 5 Neural Rendering controls, cost scaling, presets, an integrated DX11
 bridge, and PNG screenshot pairs.
 
-The current standalone release is **v1.0.6.17**. Download the loose `.addon64`
+The current standalone release is **v1.0.8.18**. Download the loose `.addon64`
 file from the [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/releases)
 page for manual installation.
 
@@ -38,6 +38,9 @@ Future releases update both repositories. See
 - Right-click any native RenoDX or custom Neural Rendering slider and choose
   **Reset** to restore only that slider to its authoritative default. Resolution
   returns to a staged 100% and still requires **Apply**.
+- Encoding and Neural Detail and Colour values are saved independently per preset.
+- Multipass edge protection offers preset-scoped strength, thickness, softness,
+  inward/outward shift, and mask visualization for Pass 2 and later.
 - Saved presets and rebindable controls.
 - Automatic recovery when a game temporarily stops submitting a usable native
   DLSS input.
@@ -78,9 +81,9 @@ See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
 
 - Start with **Matched Residual**, **75%**, transfer/color at **100%**, and
   sharpness at **0%**, then press **Apply**.
-- At **100%**, the first pass uses the original Neural Rendering path. Later
-  multipass evaluations substitute zero motion vectors to avoid temporal
-  mismatch. Resolve controls remain disabled at 100%.
+- At **100%**, the first pass uses the original Neural Rendering path. Later-pass
+  motion can reuse game motion (recommended), use zero motion, or use zero motion
+  with a history reset.
 - Lower values change the internal Neural Rendering workload only; they do not
   change the game's output resolution or its DLSS Super Resolution setting.
 - Values above 100% supersample only the internal Neural Rendering evaluation,

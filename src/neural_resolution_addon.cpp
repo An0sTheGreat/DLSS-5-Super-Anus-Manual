@@ -17,6 +17,7 @@
 #include <intrin.h>
 
 #include "neural_resample_shader.hpp"
+#include "neural_resample_edge_shader.hpp"
 #include "preset_section.hpp"
 #include "neural_ui_layout.hpp"
 #include "native_gate_policy.hpp"
@@ -125,6 +126,12 @@ constexpr std::size_t kMaximumResourceSets = 64;
 constexpr std::size_t kMaximumTrackedCommandLists = 256;
 constexpr std::size_t kMaximumQueues = 16;
 constexpr std::uint64_t kWorkingTextureBudget = 512ull * 1024 * 1024;
+constexpr const char *kNeuralDetailPresetSections[] = {
+    nullptr,
+    "RenoDXNeuralResolution-preset1",
+    "RenoDXNeuralResolution-preset2",
+    "RenoDXNeuralResolution-preset3",
+};
 constexpr std::uint8_t kPendingRecordingGuid[16] = {
     0x83, 0x39, 0x7e, 0x61, 0x56, 0x2c, 0x4b, 0xf7,
     0xa0, 0x51, 0x9c, 0x42, 0x64, 0x31, 0xe8, 0xd2 };
@@ -138,6 +145,11 @@ std::atomic_int g_sharpness_percent = 0;
 std::atomic_int g_resolve_mode = 1;
 std::atomic_int g_transfer_percent = 100;
 std::atomic_int g_color_percent = 100;
+std::atomic_int g_edge_protection_percent = 0;
+std::atomic_int g_edge_thickness_percent = nr::default_multipass_edge_thickness;
+std::atomic_int g_edge_softness_percent = 0;
+std::atomic_int g_edge_shift_pixels = 0;
+std::atomic_bool g_visualize_edge_mask = false;
 std::atomic<nr::MultipassMotionMode> g_multipass_motion_mode =
     nr::MultipassMotionMode::reuse_game_motion;
 nr::PassControls g_pass_controls; // Protected by dx12::g_render_mutex after initialization.
@@ -231,6 +243,8 @@ std::atomic_ullong g_adaptive_cache_limit = kWorkingTextureBudget;
 std::atomic_int g_effective_scale = 100;
 bool g_lifetime_events_registered = false;
 std::atomic_flag g_preset_transaction_active = ATOMIC_FLAG_INIT;
+bool g_native_presets_scoped = false;
+int g_neural_detail_preset = 0; // Overlay callbacks are serialized by g_overlay_active.
 std::atomic_flag g_overlay_active = ATOMIC_FLAG_INIT;
 std::atomic_uint g_runtime_api = 0;
 std::atomic<ULONGLONG> g_capture_off_until = 0;
@@ -291,14 +305,21 @@ void log_text(reshade::log::level level, const char *message)
         g_log(g_target_module, static_cast<int>(level), message);
 }
 
+bool get_config_text(const char *section, const char *key, char *value, std::size_t &size)
+{
+    return g_get_config != nullptr && g_get_config(g_target_module, nullptr, section, key, value, &size);
+}
+
+void set_config_text(const char *section, const char *key, const char *value)
+{
+    if (g_set_config != nullptr) g_set_config(g_target_module, nullptr, section, key, value);
+}
+
 bool get_config_int(const char *section, const char *key, int &value)
 {
-    if (g_get_config == nullptr)
-        return false;
     char text[32] = {};
     std::size_t size = sizeof(text);
-    if (!g_get_config(g_target_module, nullptr, section, key, text, &size))
-        return false;
+    if (!get_config_text(section, key, text, size)) return false;
     bool negative = false;
     std::size_t index = 0;
     if (text[0] == '-') { negative = true; ++index; }
@@ -317,12 +338,12 @@ bool get_config_int(const char *section, const char *key, int &value)
 
 void set_config_int(const char *section, const char *key, int value)
 {
-    if (g_set_config == nullptr)
-        return;
     char text[16] = {};
     diagnostic_format(text, "%d", value);
-    g_set_config(g_target_module, nullptr, section, key, text);
+    set_config_text(section, key, text);
 }
+
+namespace dx12 { extern CRITICAL_SECTION g_render_mutex; }
 
 class ScopedLock
 {
@@ -334,6 +355,115 @@ public:
 private:
     CRITICAL_SECTION &section_;
 };
+
+struct NeuralDetailPreset
+{
+    int resolve = 1;
+    int transfer = 100;
+    int color = 100;
+    int sharpness = 0;
+    int edge_protection = 0;
+    int edge_thickness = nr::default_multipass_edge_thickness;
+    int edge_softness = 0;
+    int edge_shift = 0;
+};
+
+void apply_neural_detail_preset(NeuralDetailPreset values)
+{
+    values.resolve = std::clamp(values.resolve, 0, 1);
+    values.transfer = std::clamp(values.transfer, 0, 200);
+    values.color = std::clamp(values.color, 0, nr::maximum_color_percent);
+    values.sharpness = std::clamp(values.sharpness, 0, 100);
+    values.edge_protection = std::clamp(values.edge_protection, 0, 100);
+    values.edge_thickness = std::clamp(values.edge_thickness, 0, 100);
+    values.edge_softness = std::clamp(values.edge_softness, 0, 100);
+    values.edge_shift = nr::clamp_multipass_edge_shift(values.edge_shift);
+    ScopedLock lock(dx12::g_render_mutex);
+    const bool path_changed = nr::uses_base_resolve(g_transfer_percent.load(), g_color_percent.load(),
+        g_sharpness_percent.load()) != nr::uses_base_resolve(values.transfer, values.color, values.sharpness);
+    const bool edge_changed = g_edge_protection_percent.load() != values.edge_protection ||
+        g_edge_thickness_percent.load() != values.edge_thickness ||
+        g_edge_softness_percent.load() != values.edge_softness ||
+        g_edge_shift_pixels.load() != values.edge_shift;
+    g_resolve_mode.store(values.resolve);
+    g_transfer_percent.store(values.transfer);
+    g_color_percent.store(values.color);
+    g_sharpness_percent.store(values.sharpness);
+    g_edge_protection_percent.store(values.edge_protection);
+    g_edge_thickness_percent.store(values.edge_thickness);
+    g_edge_softness_percent.store(values.edge_softness);
+    g_edge_shift_pixels.store(values.edge_shift);
+    if (!path_changed && !edge_changed) return;
+    const auto stream = g_stream_generation.fetch_add(1) + 1;
+    g_transition_generation.store(stream);
+    g_transition_native_frame.store(0);
+    g_transition_pass_mask.store(0);
+    g_effective_scale.store(100);
+    if (path_changed)
+        g_quiesce_generation.store(g_scale_generation.fetch_add(1) + 1);
+}
+
+void save_neural_detail_preset(int preset)
+{
+    if (preset < 1 || preset > 3) return;
+    const char *section = kNeuralDetailPresetSections[preset];
+    set_config_int(section, "CostResolveMode", g_resolve_mode.load());
+    set_config_int(section, "CostTransferPercent", g_transfer_percent.load());
+    set_config_int(section, "CostColorPercent", g_color_percent.load());
+    set_config_int(section, "SharpnessPercent", g_sharpness_percent.load());
+    set_config_int(section, "MultipassEdgeProtection", g_edge_protection_percent.load());
+    set_config_int(section, "MultipassEdgeThicknessV2", g_edge_thickness_percent.load());
+    set_config_int(section, "MultipassEdgeSoftness", g_edge_softness_percent.load());
+    set_config_int(section, "MultipassEdgeShift", g_edge_shift_pixels.load());
+}
+
+void load_neural_detail_preset(int preset)
+{
+    if (preset < 1 || preset > 3) return;
+    NeuralDetailPreset values;
+    const char *section = kNeuralDetailPresetSections[preset];
+    get_config_int(section, "CostResolveMode", values.resolve);
+    get_config_int(section, "CostTransferPercent", values.transfer);
+    get_config_int(section, "CostColorPercent", values.color);
+    get_config_int(section, "SharpnessPercent", values.sharpness);
+    get_config_int(section, "MultipassEdgeProtection", values.edge_protection);
+    get_config_int(section, "MultipassEdgeThicknessV2", values.edge_thickness);
+    get_config_int(section, "MultipassEdgeSoftness", values.edge_softness);
+    get_config_int(section, "MultipassEdgeShift", values.edge_shift);
+    apply_neural_detail_preset(values);
+}
+
+void initialize_neural_detail_presets(int active)
+{
+    const NeuralDetailPreset legacy{g_resolve_mode.load(), g_transfer_percent.load(),
+        g_color_percent.load(), g_sharpness_percent.load(), g_edge_protection_percent.load(),
+        g_edge_thickness_percent.load(), g_edge_softness_percent.load(), g_edge_shift_pixels.load()};
+    constexpr const char *keys[] = {
+        "CostResolveMode", "CostTransferPercent", "CostColorPercent", "SharpnessPercent",
+        "MultipassEdgeProtection", "MultipassEdgeSoftness", "MultipassEdgeShift" };
+    const int defaults[] = {legacy.resolve, legacy.transfer, legacy.color, legacy.sharpness,
+        legacy.edge_protection, legacy.edge_softness, legacy.edge_shift};
+    for (int preset = 1; preset <= 3; ++preset)
+    {
+        for (unsigned key = 0; key < std::size(keys); ++key)
+        {
+            int value = 0;
+            if (!get_config_int(kNeuralDetailPresetSections[preset], keys[key], value))
+                set_config_int(kNeuralDetailPresetSections[preset], keys[key], defaults[key]);
+        }
+        int thickness = 0;
+        if (!get_config_int(kNeuralDetailPresetSections[preset], "MultipassEdgeThicknessV2", thickness))
+        {
+            if (get_config_int(kNeuralDetailPresetSections[preset], "MultipassEdgeThickness", thickness))
+                thickness = nr::migrate_legacy_multipass_edge_thickness(thickness);
+            else
+                thickness = legacy.edge_thickness;
+            set_config_int(kNeuralDetailPresetSections[preset], "MultipassEdgeThicknessV2", thickness);
+        }
+    }
+    load_neural_detail_preset(active);
+    g_neural_detail_preset = active;
+}
 
 __declspec(noinline) void set_scale(int scale)
 {
@@ -608,7 +738,10 @@ void __fastcall draw_inline_settings(void *setting)
         g_evaluation_device.observed(), g_lifetime_events_registered);
     if (before_debug || before_advanced)
     {
-        if (before_advanced)
+        const unsigned pass_count = std::clamp(g_observed_pass_count.load(std::memory_order_relaxed), 1u, 10u);
+        const bool detail_available = status.controls_available &&
+            static_cast<reshade::api::device_api>(g_runtime_api.load()) == reshade::api::device_api::d3d12;
+        if (before_debug)
         {
             int motion_mode = static_cast<int>(g_multipass_motion_mode.load(std::memory_order_relaxed));
             if (draw_multipass_motion_mode(motion_mode))
@@ -630,6 +763,30 @@ void __fastcall draw_inline_settings(void *setting)
                     static_cast<int>(selected));
             }
             ImGui::TextWrapped("Controls motion after Pass 1. Reuse Game Motion is recommended.");
+            int edge_protection = g_edge_protection_percent.load(std::memory_order_relaxed);
+            int edge_thickness = g_edge_thickness_percent.load(std::memory_order_relaxed);
+            int edge_softness = g_edge_softness_percent.load(std::memory_order_relaxed);
+            int edge_shift = g_edge_shift_pixels.load(std::memory_order_relaxed);
+            bool edge_changed = draw_multipass_edge_protection(detail_available, pass_count, edge_protection);
+            edge_changed |= draw_multipass_edge_thickness(detail_available, pass_count, edge_thickness);
+            edge_changed |= draw_multipass_edge_softness(detail_available, pass_count, edge_softness);
+            edge_changed |= draw_multipass_edge_shift(detail_available, pass_count, edge_shift);
+            if (edge_changed)
+            {
+                apply_neural_detail_preset({g_resolve_mode.load(), g_transfer_percent.load(),
+                    g_color_percent.load(), g_sharpness_percent.load(), edge_protection,
+                    edge_thickness, edge_softness, edge_shift});
+                save_neural_detail_preset(field<int>(g_target_module, kPresetIndexRva));
+            }
+            bool visualize_edge_mask = g_visualize_edge_mask.load(std::memory_order_relaxed);
+            if (draw_multipass_edge_visualizer(detail_available, pass_count, visualize_edge_mask))
+                g_visualize_edge_mask.store(visualize_edge_mask, std::memory_order_relaxed);
+            if (visualize_edge_mask && pass_count > 1)
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f),
+                    "Green = transfer suppression from depth + residual edges");
+            ImGui::TextWrapped(pass_count > 1
+                ? "Uses game depth and pass-added edge rejection to suppress ringing and movement trails in Pass 2 and later. Pass 1 is unchanged."
+                : "Available when two or more Neural Rendering passes are active.");
         }
         nr::PassControls controls;
         {
@@ -638,10 +795,8 @@ void __fastcall draw_inline_settings(void *setting)
         }
         const nr::PassResolve inherited{false, g_resolve_mode.load(), g_transfer_percent.load(),
             g_color_percent.load(), g_sharpness_percent.load()};
-        const bool detail_available = status.controls_available &&
-            static_cast<reshade::api::device_api>(g_runtime_api.load()) == reshade::api::device_api::d3d12;
         const bool controls_changed = before_debug &&
-            draw_neural_pass_sections(detail_available, g_observed_pass_count.load(), controls, inherited,
+            draw_neural_pass_sections(detail_available, pass_count, controls, inherited,
                 g_pass_sections, &set_config_int);
         if (controls_changed) {
             nr::clamp_pass_controls(controls);
@@ -662,30 +817,10 @@ void __fastcall draw_inline_settings(void *setting)
                 detail_available ? g_effective_scale.load(std::memory_order_relaxed) : 0);
             if (detail_changed || edits.resolve_changed)
             {
-                resolve.transfer = std::clamp(resolve.transfer, 0, 200);
-                resolve.color = std::clamp(resolve.color, 0, nr::maximum_color_percent);
-                sharpness = std::clamp(sharpness, 0, 100);
-                {
-                    ScopedLock lock(dx12::g_render_mutex);
-                    const bool path_changed = nr::uses_base_resolve(g_transfer_percent.load(), g_color_percent.load(),
-                        g_sharpness_percent.load()) != nr::uses_base_resolve(resolve.transfer, resolve.color, sharpness);
-                    g_resolve_mode.store(std::clamp(resolve.mode, 0, 1));
-                    g_transfer_percent.store(resolve.transfer);
-                    g_color_percent.store(resolve.color);
-                    g_sharpness_percent.store(sharpness);
-                    if (path_changed) {
-                        // Reuse the existing fence-safe native/working-path transition.
-                        const auto allocation = g_scale_generation.fetch_add(1) + 1;
-                        const auto stream = g_stream_generation.fetch_add(1) + 1;
-                        g_transition_generation.store(stream);
-                        g_transition_native_frame.store(0); g_transition_pass_mask.store(0);
-                        g_quiesce_generation.store(allocation);
-                    }
-                }
-                set_config_int("RenoDXNeuralResolution", "CostResolveMode", g_resolve_mode.load());
-                set_config_int("RenoDXNeuralResolution", "CostTransferPercent", g_transfer_percent.load());
-                set_config_int("RenoDXNeuralResolution", "CostColorPercent", g_color_percent.load());
-                set_config_int("RenoDXNeuralResolution", "SharpnessPercent", sharpness);
+                apply_neural_detail_preset({resolve.mode, resolve.transfer, resolve.color, sharpness,
+                    g_edge_protection_percent.load(), g_edge_thickness_percent.load(),
+                    g_edge_softness_percent.load(), g_edge_shift_pixels.load()});
+                save_neural_detail_preset(field<int>(g_target_module, kPresetIndexRva));
             }
             if (edits.pending_changed) g_pending_scale_percent.store(pending, std::memory_order_relaxed);
             if (edits.apply) set_scale(pending);
@@ -865,6 +1000,52 @@ bool valid_vector(std::uintptr_t begin, std::uintptr_t end, std::size_t stride, 
         (end - begin) / stride <= maximum;
 }
 
+bool scope_native_detail_and_encoding_settings()
+{
+    if (g_target_module == nullptr || g_get_config == nullptr || g_set_config == nullptr) return false;
+    const auto base = reinterpret_cast<std::uintptr_t>(g_target_module);
+    const std::uintptr_t begin = *reinterpret_cast<const std::uintptr_t *>(base + kSettingsBeginRva);
+    const std::uintptr_t end = *reinterpret_cast<const std::uintptr_t *>(base + kSettingsEndRva);
+    if (!valid_vector(begin, end, sizeof(void *), 512)) return false;
+
+    unsigned selected_count = 0, encoding_count = 0, detail_count = 0;
+    for (std::uintptr_t cursor = begin; cursor != end; cursor += sizeof(void *))
+    {
+        void *setting = *reinterpret_cast<void **>(cursor);
+        if (setting == nullptr) return false;
+        const auto &key = field<PresetStringView>(setting, 0);
+        const auto &section = field<PresetStringView>(setting, 0xA0);
+        if (!native_setting_uses_presets(key, section)) continue;
+        if (selected_count == 512 || !valid_preset_string(key) ||
+            field<std::uint8_t>(setting, 0x338) > 1)
+            return false;
+        ++selected_count;
+        if (preset_string_equals(key, "DirectNeuralRenderingEncoding")) ++encoding_count;
+        else ++detail_count;
+    }
+    if (encoding_count == 0) return false;
+
+    const auto &global_name = field<PresetStringView>(g_target_module, kGlobalNameRva);
+    if (!valid_preset_string(global_name)) return false;
+    unsigned seeded = 0;
+    for (std::uintptr_t cursor = begin; cursor != end; cursor += sizeof(void *))
+    {
+        void *setting = *reinterpret_cast<void **>(cursor);
+        if (!native_setting_uses_presets(field<PresetStringView>(setting, 0),
+                field<PresetStringView>(setting, 0xA0))) continue;
+        seeded += seed_preset_setting(global_name, field<PresetStringView>(setting, 0),
+            [](const char *section, const char *key, char *value, std::size_t *size) {
+                return size != nullptr && get_config_text(section, key, value, *size);
+            },
+            &set_config_text);
+        field<std::uint8_t>(setting, 0x338) = 0;
+    }
+    log_message(reshade::log::level::info,
+        "NR native presets: scoped exact Encoding=%u Neural Details=%u settings; seeded %u missing preset values from prior globals.",
+        encoding_count, detail_count, seeded);
+    return true;
+}
+
 bool callback_vector_is_valid(std::uintptr_t begin_rva, std::uintptr_t end_rva)
 {
     const auto base = reinterpret_cast<std::uintptr_t>(g_target_module);
@@ -965,8 +1146,7 @@ bool apply_preset_transaction(int desired)
             "RenoDX Neural Resolution V6.6: loaded settings from [%s].", section_buffer);
     }
 
-    return invoke_callback_vector(
-        kPresetChangedCallbacksBeginRva, kPresetChangedCallbacksEndRva);
+    return invoke_callback_vector(kPresetChangedCallbacksBeginRva, kPresetChangedCallbacksEndRva);
 }
 
 void commit_queued_preset(ULONGLONG now)
@@ -1064,8 +1244,13 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
     // Capture preset changes made through RenoDX's normal UI. Preset 0 means
     // disabled and never replaces the last enabled choice.
     const int observed = *preset;
-    if (g_queued_preset.load(std::memory_order_acquire) == -1 &&
-        observed >= 1 && observed <= 3)
+    if (!g_native_presets_scoped && scope_native_detail_and_encoding_settings())
+    {
+        g_native_presets_scoped = true;
+        if (g_queued_preset.load(std::memory_order_acquire) == -1 && observed >= 1 && observed <= 3)
+            queue_preset(observed, OverlayMessage::none);
+    }
+    if (g_queued_preset.load(std::memory_order_acquire) == -1 && observed >= 1 && observed <= 3)
         remember_preset(observed);
 
     const auto pressed = poll_control_keys(runtime);
@@ -1105,6 +1290,12 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
         }
     }
     commit_queued_preset(now);
+    const int active_preset = *preset;
+    if (active_preset != g_neural_detail_preset && active_preset >= 0 && active_preset <= 3)
+    {
+        if (active_preset != 0) load_neural_detail_preset(active_preset);
+        g_neural_detail_preset = active_preset;
+    }
     observe_stream_configuration();
     if (pressed[2]) request_screenshot();
     if (pressed[3]) adjust_pass_count(1, now);
@@ -1332,7 +1523,10 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
-#if defined(NR_SLIDER_RESET_RELEASE)
+#if defined(NR_MULTIPASS_EDGE_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.8: preset-scoped multipass edge controls and corrected zero-pass NR capture.";
+#elif defined(NR_SLIDER_RESET_RELEASE)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 1.0.6: right-click slider reset, 100% color defaults, and 0-200% color controls.";
 #elif defined(NR_MOTION_RUNTIME_RELEASE)
@@ -1414,7 +1608,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-#if defined(NR_SLIDER_RESET_RELEASE)
+#if defined(NR_MULTIPASS_EDGE_RELEASE)
+            "NR BUILD ID: 1.0.8-multipass-edge.1 module=%s config-schema=9.",
+#elif defined(NR_SLIDER_RESET_RELEASE)
             "NR BUILD ID: 1.0.6-slider-reset.1 module=%s config-schema=9.",
 #elif defined(NR_MOTION_RUNTIME_RELEASE)
             "NR BUILD ID: 1.0.5-motion-runtime.1 module=%s config-schema=9.",
@@ -1457,6 +1653,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         imgui_function_table_instance() =
             *reinterpret_cast<const imgui_function_table **>(
                 reinterpret_cast<std::uintptr_t>(module) + kImguiTableRva);
+        g_native_presets_scoped = scope_native_detail_and_encoding_settings();
         int configured_scale = 100;
         int configured_resolve = 1, configured_transfer = 100, configured_color = 100;
         get_config_int("RenoDXNeuralResolution", "CostResolveMode", configured_resolve);
@@ -1468,6 +1665,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         int configured_motion = static_cast<int>(nr::MultipassMotionMode::reuse_game_motion);
         get_config_int("RenoDXNeuralResolution", "MultipassMotionMode", configured_motion);
         g_multipass_motion_mode.store(nr::clamp_multipass_motion_mode(configured_motion));
+        int configured_edge_protection = 0;
+        get_config_int("RenoDXNeuralResolution", "MultipassEdgeProtection", configured_edge_protection);
+        g_edge_protection_percent.store(std::clamp(configured_edge_protection, 0, 100));
         nr::load_pass_controls(g_pass_controls, &get_config_int);
         nr::load_pass_sections(g_pass_sections, &get_config_int);
         unsigned customized_passes = 0;
@@ -1513,7 +1713,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             get_config_int("RenoDXNeuralResolution", "LastEnabledPresetV61", saved_preset);
         saved_preset = std::clamp(saved_preset, 1, 3);
         g_last_preset = saved_preset;
-        if (current != saved_preset)
+        initialize_neural_detail_presets(saved_preset);
+        if (current != saved_preset || g_native_presets_scoped)
             queue_preset(saved_preset, OverlayMessage::none);
         if (g_register_event_for_addon != nullptr)
         {

@@ -20,11 +20,30 @@ struct PresetStringView
 };
 static_assert(sizeof(PresetStringView) == 32);
 
+inline bool valid_preset_string(const PresetStringView &value)
+{
+    return value.size != 0 && value.size <= value.capacity && value.data() != nullptr;
+}
+
+template <std::size_t N>
+inline bool preset_string_equals(const PresetStringView &value, const char (&expected)[N])
+{
+    return valid_preset_string(value) && value.size == N - 1 &&
+        std::memcmp(value.data(), expected, N - 1) == 0;
+}
+
+inline bool native_setting_uses_presets(const PresetStringView &key,
+                                        const PresetStringView &section)
+{
+    return preset_string_equals(key, "DirectNeuralRenderingEncoding") ||
+        preset_string_equals(section, "Neural Details");
+}
+
 inline bool make_preset_section(const PresetStringView &global_name, int preset,
                                char (&buffer)[128], PresetStringView &section)
 {
-    if (preset < 1 || preset > 3 || global_name.size == 0 ||
-        global_name.size > sizeof(buffer) - 9 || global_name.size > global_name.capacity)
+    if (preset < 1 || preset > 3 || !valid_preset_string(global_name) ||
+        global_name.size > sizeof(buffer) - 9)
         return false;
     const char *name = global_name.data();
     if (name == nullptr) return false;
@@ -42,4 +61,30 @@ inline bool make_preset_section(const PresetStringView &global_name, int preset,
         section.capacity = sizeof(buffer) - 1;
     }
     return true;
+}
+
+template <typename Read, typename Write>
+inline unsigned seed_preset_setting(const PresetStringView &global_name,
+                                    const PresetStringView &key,
+                                    Read read, Write write)
+{
+    if (!valid_preset_string(global_name) || !valid_preset_string(key)) return 0;
+    char value[128] = {};
+    std::size_t value_size = sizeof(value);
+    if (!read(global_name.data(), key.data(), value, &value_size) || value_size > sizeof(value)) return 0;
+    value[sizeof(value) - 1] = 0;
+    unsigned seeded = 0;
+    for (int preset = 1; preset <= 3; ++preset)
+    {
+        char section_buffer[128] = {}, existing[128] = {};
+        PresetStringView section;
+        if (!make_preset_section(global_name, preset, section_buffer, section)) return seeded;
+        std::size_t existing_size = sizeof(existing);
+        if (!read(section_buffer, key.data(), existing, &existing_size))
+        {
+            write(section_buffer, key.data(), value);
+            ++seeded;
+        }
+    }
+    return seeded;
 }

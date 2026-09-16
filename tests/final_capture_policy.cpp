@@ -14,6 +14,14 @@ int main()
     assert(!p.ready(1500,11,20));
     assert(!p.ready(1016,11,21)); // interleaved successful NR, reject mixed pair
     assert(p.expired(1500));
+    p.start(2000,20,30,2);
+    assert(!p.ready(2016,21,30)); // Pass 1 bypassed; do not capture its retained output.
+    assert(p.ready(2016,22,30));  // Entire two-pass group bypassed: true zero-pass frame.
+    p.start(2500,25,35,3);
+    assert(!p.ready(2516,27,35));
+    assert(p.ready(2516,28,35));
+    p.start(3000,~0u,40,2);
+    assert(p.ready(3016,1,40));   // Counter rollover preserves the pass delta.
     using namespace nr::screenshots;
     const auto a = png_rgb({.18f,.18f,.18f},Encoding::scrgb,true,80.f);
     const auto b = png_rgb({.18f*203.f/80.f,.18f*203.f/80.f,.18f*203.f/80.f},Encoding::scrgb,true,203.f);

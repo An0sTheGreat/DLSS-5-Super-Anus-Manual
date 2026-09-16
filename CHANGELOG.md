@@ -4,6 +4,22 @@ All notable public changes are documented here.
 
 ## [Unreleased]
 
+## [1.0.8.18] - 2026-09-15
+
+- Make Encoding and the primary Neural Detail and Colour controls restore their
+  own saved values when switching between presets.
+- Add preset-scoped multipass edge protection, thickness, softness, inward/outward
+  shift, and a live mask visualizer. These experimental controls apply only to
+  Pass 2 and later and are disabled when one pass is active.
+- Combine depth discontinuities with neural residuals for later-pass edge
+  suppression while retaining adjustable strength, width, softness, and offset.
+- Fix the edge shader's excessive sampling and root-constant mismatch, which
+  could freeze the image or produce a mostly black frame when multipass enabled.
+- Preserve the nested Frame Generation source guard that prevents the recurring
+  TLOU2 flicker path.
+- Fix NR ON/OFF capture with multiple passes: OFF now waits until the entire
+  configured pass group is bypassed, producing a true zero-pass comparison.
+
 ## [1.0.6.17] - 2026-09-13
 
 - Default unsaved Pass 1 and additional-pass Neural Color Strength to 100%.
@@ -204,7 +220,8 @@ All notable public changes are documented here.
 - Validated the Cost Scaler on NVIDIA hardware and WARP, plus focused DX11,
   lifetime, UI, hotkey, capture, and recovery fixtures.
 
-[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.6.17...HEAD
+[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.8.18...HEAD
+[1.0.8.18]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.6.17...v1.0.8.18
 [1.0.6.17]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.5.16...v1.0.6.17
 [1.0.5.16]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.3.12...v1.0.5.16
 [1.0.3.12]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/compare/v1.0.3...v1.0.3.12

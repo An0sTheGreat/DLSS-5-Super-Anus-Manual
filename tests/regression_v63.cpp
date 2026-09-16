@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <string>
 #include "preset_section.hpp"
 #include "native_gate_policy.hpp"
@@ -41,6 +42,45 @@ static void test_presets()
     bad.size = 6;
     assert(!make_preset_section(bad, 0, buffer, section));
     assert(!make_preset_section(bad, 4, buffer, section));
+
+    auto view = [](const std::string &text) {
+        PresetStringView result;
+        result.size = text.size();
+        if (text.size() <= 15) std::memcpy(result.storage, text.c_str(), text.size() + 1);
+        else
+        {
+            const char *pointer = text.c_str();
+            std::memcpy(result.storage, &pointer, sizeof(pointer));
+            result.capacity = text.size();
+        }
+        return result;
+    };
+    const std::string global_text = "RENODX-DLSS", key_text = "DirectNeuralRenderingEncoding";
+    const auto global = view(global_text), key = view(key_text);
+    assert(native_setting_uses_presets(key, view(std::string("Anything"))));
+    assert(native_setting_uses_presets(view(std::string("OtherKey")), view(std::string("Neural Details"))));
+    assert(!native_setting_uses_presets(view(std::string("OtherKey")), view(std::string("Encoding"))));
+
+    std::map<std::string, std::string> config = {
+        {global_text + "/" + key_text, "2"},
+        {global_text + "-preset2/" + key_text, "4"},
+    };
+    auto read = [&](const char *section_name, const char *key_name, char *value, std::size_t *size) {
+        const auto found = config.find(std::string(section_name) + "/" + key_name);
+        if (found == config.end() || found->second.size() + 1 > *size) return false;
+        std::memcpy(value, found->second.c_str(), found->second.size() + 1);
+        *size = found->second.size() + 1;
+        return true;
+    };
+    auto write = [&](const char *section_name, const char *key_name, const char *value) {
+        config[std::string(section_name) + "/" + key_name] = value;
+    };
+    assert(seed_preset_setting(global, key, read, write) == 2);
+    assert(config[global_text + "-preset1/" + key_text] == "2");
+    assert(config[global_text + "-preset2/" + key_text] == "4");
+    assert(config[global_text + "-preset3/" + key_text] == "2");
+    assert(seed_preset_setting(global, key, read, write) == 0);
+
     std::puts("Preset namespace tests: repeated cycles, inline and external storage, bounds passed.");
 }
 

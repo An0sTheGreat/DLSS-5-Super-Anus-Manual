@@ -123,6 +123,56 @@ static void test_pass_controls()
     std::puts("Pass controls: independent defaults/isolation, retired controls ignored, per-pass config round-trip, 1-10 pass visibility and expanded defaults passed.");
 }
 
+static void test_edge_protection_state()
+{
+    assert(!nr::uses_multipass_edge_depth(0, 100, true));
+    assert(!nr::uses_multipass_edge_depth(1, 0, false));
+    assert(nr::uses_multipass_edge_depth(1, 1, false));
+    assert(nr::uses_multipass_edge_depth(1, 0, true));
+    assert(nr::multipass_edge_mode(0, false) == 0.0f);
+    assert(nr::multipass_edge_mode(100, false) == 1.0f);
+    assert(nr::multipass_edge_mode(0, true) < 0.0f);
+    assert(nr::multipass_edge_mode(50, true) == -0.5f);
+    assert(nr::multipass_edge_thickness(0) == 0.0f);
+    assert(nr::multipass_edge_thickness(100) == 6.0f);
+    assert(nr::multipass_edge_thickness(nr::default_multipass_edge_thickness) > 1.0f);
+    assert(nr::multipass_edge_thickness(nr::default_multipass_edge_thickness) < 1.03f);
+    assert(nr::migrate_legacy_multipass_edge_thickness(0) == 0);
+    assert(nr::migrate_legacy_multipass_edge_thickness(33) == 17);
+    assert(nr::migrate_legacy_multipass_edge_thickness(100) == 50);
+    assert(nr::multipass_edge_softness(0) == 0.0f);
+    assert(nr::multipass_edge_softness(100) == 1.0f);
+    assert(nr::clamp_multipass_edge_shift(-99) == -6);
+    assert(nr::clamp_multipass_edge_shift(99) == 6);
+    for (unsigned passes : {1u, 2u})
+    {
+        ImGui::CreateContext();
+        auto &io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
+        io.DisplaySize = ImVec2(800, 400); io.DeltaTime = 1.f / 60.f;
+        unsigned char *pixels; int w, h; io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+        ImGui::NewFrame(); ImGui::Begin("Edge protection");
+        int strength = 50;
+        int thickness = nr::default_multipass_edge_thickness;
+        int softness = 0;
+        int shift = 0;
+        bool visualize = false;
+        assert(!draw_multipass_edge_protection(true, passes, strength));
+        assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
+        assert(!draw_multipass_edge_thickness(true, passes, thickness));
+        assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
+        assert(!draw_multipass_edge_softness(true, passes, softness));
+        assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
+        assert(!draw_multipass_edge_shift(true, passes, shift));
+        assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
+        assert(!draw_multipass_edge_visualizer(true, passes, visualize));
+        assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
+        assert(strength == 50 && thickness == nr::default_multipass_edge_thickness && softness == 0 && shift == 0);
+        assert(!visualize);
+        ImGui::End(); ImGui::Render(); ImGui::DestroyContext();
+    }
+    std::puts("Multipass edge protection/thickness/softness/shift: ranges and defaults passed; visible but disabled at one pass.");
+}
+
 static std::map<std::string,int> section_config;
 static void write_section(const char *section, const char *key, int value) {
     section_config[std::string(section) + "/" + key] = value;
@@ -199,8 +249,6 @@ static void test_layout(float width, float font_scale, bool advanced_open,
         int pending = 75, sharpness = 25;
         NeuralResolveControls resolve;
         begin_neural_controls_layout();
-        int motion_mode = static_cast<int>(nr::MultipassMotionMode::reuse_game_motion);
-        assert(!draw_multipass_motion_mode(motion_mode));
         assert(!draw_neural_detail_section(status.controls_available, resolve, sharpness));
         assert(ImGui::GetStyle().Alpha == alpha && ImGui::GetCurrentWindow()->DC.TreeDepth == depth);
         assert(std::fabs(ImGui::GetItemRectMin().x - root_x) < 0.1f);
@@ -214,6 +262,18 @@ static void test_layout(float width, float font_scale, bool advanced_open,
         if (ImGui::TreeNode("Advanced")) { ImGui::TextUnformatted("Pass Count"); ImGui::TreePop(); }
         const float advanced_end = ImGui::GetCursorPosY();
         begin_neural_controls_layout();
+        int motion_mode = static_cast<int>(nr::MultipassMotionMode::reuse_game_motion);
+        assert(!draw_multipass_motion_mode(motion_mode));
+        int edge_protection = 0;
+        int edge_thickness = nr::default_multipass_edge_thickness;
+        int edge_softness = 0;
+        int edge_shift = 0;
+        bool visualize_edge_mask = false;
+        assert(!draw_multipass_edge_protection(status.controls_available, 3, edge_protection));
+        assert(!draw_multipass_edge_thickness(status.controls_available, 3, edge_thickness));
+        assert(!draw_multipass_edge_softness(status.controls_available, 3, edge_softness));
+        assert(!draw_multipass_edge_shift(status.controls_available, 3, edge_shift));
+        assert(!draw_multipass_edge_visualizer(status.controls_available, 3, visualize_edge_mask));
         draw_neural_pass_sections(status.controls_available, 3, pass_controls, {}, sections);
         assert(ImGui::GetCursorPosY() > advanced_end);
         ImGui::SeparatorText("Controls");
@@ -261,8 +321,14 @@ static void test_layout(float width, float font_scale, bool advanced_open,
         const char *detail = std::strstr(log, "Neural Detail and Colour");
         const char *passes = std::strstr(log, "Per-Pass Controls");
         const char *motion = std::strstr(log, "Multipass Motion");
-        assert(motion && detail && passes && motion < detail && detail < performance &&
-            advanced < passes && passes < controls);
+        const char *edge = std::strstr(log, "Multipass Edge Protection");
+        const char *thickness = std::strstr(log, "Multipass Edge Thickness");
+        const char *softness = std::strstr(log, "Multipass Edge Softness");
+        const char *shift = std::strstr(log, "Multipass Edge Shift");
+        const char *visualize = std::strstr(log, "Visualize Edge Mask");
+        assert(motion && edge && thickness && softness && shift && visualize && detail && passes &&
+            detail < performance && performance < advanced && advanced < motion && motion < edge &&
+            edge < thickness && thickness < softness && softness < shift && shift < visualize && visualize < passes && passes < controls);
         for (const char *label : {"Neural Transfer Strength", "Neural Color Strength", "Neural Sharpness"}) {
             const char *found = std::strstr(log,label);
             assert(found && detail < found && found < performance);
@@ -361,6 +427,7 @@ int main()
     std::puts("Debug/Runtime API/Links/About: initially collapsed, user expansion retained; Advanced unchanged.");
     test_backend_status();
     test_pass_controls();
+    test_edge_protection_state();
     test_section_persistence();
     for (bool available : {false, true})
     for (int applied = 25; applied <= 150; ++applied)

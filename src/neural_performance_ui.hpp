@@ -34,6 +34,64 @@ inline bool draw_multipass_motion_mode(int &mode)
         "Reuse Game Motion (Recommended)\0Zero Later-Pass Motion\0Zero Motion + Reset History\0");
 }
 
+inline bool draw_multipass_edge_protection(bool available, unsigned pass_count, int &strength)
+{
+    const bool enabled = available && pass_count > 1;
+    ImGui::BeginDisabled(!enabled);
+    bool changed = ImGui::SliderInt("Multipass Edge Protection", &strength, 0, 100,
+        "%d%%", ImGuiSliderFlags_AlwaysClamp);
+    if (enabled) changed |= draw_slider_reset_context_menu(strength, 0);
+    ImGui::EndDisabled();
+    return changed;
+}
+
+inline bool draw_multipass_edge_thickness(bool available, unsigned pass_count, int &thickness)
+{
+    const bool enabled = available && pass_count > 1;
+    ImGui::BeginDisabled(!enabled);
+    bool changed = ImGui::SliderInt("Multipass Edge Thickness", &thickness, 0, 100,
+        "%d%%", ImGuiSliderFlags_AlwaysClamp);
+    const bool hovered = ImGui::IsItemHovered();
+    if (enabled) changed |= draw_slider_reset_context_menu(thickness, nr::default_multipass_edge_thickness);
+    if (hovered) ImGui::SetTooltip("17%% matches the original mask width. 100%% is 6x wider.");
+    ImGui::EndDisabled();
+    return changed;
+}
+
+inline bool draw_multipass_edge_softness(bool available, unsigned pass_count, int &softness)
+{
+    const bool enabled = available && pass_count > 1;
+    ImGui::BeginDisabled(!enabled);
+    bool changed = ImGui::SliderInt("Multipass Edge Softness", &softness, 0, 100,
+        "%d%%", ImGuiSliderFlags_AlwaysClamp);
+    const bool hovered = ImGui::IsItemHovered();
+    if (enabled) changed |= draw_slider_reset_context_menu(softness, 0);
+    if (hovered) ImGui::SetTooltip("Feathers the mask boundary without changing its protection strength.");
+    ImGui::EndDisabled();
+    return changed;
+}
+
+inline bool draw_multipass_edge_shift(bool available, unsigned pass_count, int &shift)
+{
+    const bool enabled = available && pass_count > 1;
+    ImGui::BeginDisabled(!enabled);
+    bool changed = ImGui::SliderInt("Multipass Edge Shift", &shift, -6, 6,
+        "%+d px", ImGuiSliderFlags_AlwaysClamp);
+    const bool hovered = ImGui::IsItemHovered();
+    if (enabled) changed |= draw_slider_reset_context_menu(shift, 0);
+    if (hovered) ImGui::SetTooltip("Negative shifts outward; positive shifts inward.");
+    ImGui::EndDisabled();
+    return changed;
+}
+
+inline bool draw_multipass_edge_visualizer(bool available, unsigned pass_count, bool &visualize)
+{
+    ImGui::BeginDisabled(!available || pass_count <= 1);
+    const bool changed = ImGui::Checkbox("Visualize Edge Mask", &visualize);
+    ImGui::EndDisabled();
+    return changed;
+}
+
 inline NeuralPerformanceEdits draw_neural_performance_section(
     bool available, int &pending, int applied, NeuralResolveControls *resolve = nullptr, int effective = 0)
 {

@@ -1,13 +1,26 @@
 // Area downsample and matched-residual resolve adapted from xenmods/DLSSNR-Cost-Scaler.
 // Copyright (c) 2026 xen. MIT: see docs/LICENSE-DLSSNR-Cost-Scaler.txt.
 // Runs in the existing NR codec domain; never changes the game's SR resolution.
+#ifndef NR_EDGE_DEPTH
+#define NR_EDGE_DEPTH 0
+#endif
+#if NR_EDGE_DEPTH
 #define ROOT_SIGNATURE \
     "DescriptorTable(SRV(t0)),DescriptorTable(UAV(u0))," \
-    "RootConstants(num32BitConstants=14,b0)," \
+    "RootConstants(num32BitConstants=24,b0)," \
+    "DescriptorTable(SRV(t1)),DescriptorTable(SRV(t2)),DescriptorTable(SRV(t3))"
+#else
+#define ROOT_SIGNATURE \
+    "DescriptorTable(SRV(t0)),DescriptorTable(UAV(u0))," \
+    "RootConstants(num32BitConstants=15,b0)," \
     "DescriptorTable(SRV(t1)),DescriptorTable(SRV(t2))"
+#endif
 Texture2D<float4> Source : register(t0);
 Texture2D<float4> SmallInput : register(t1);
 Texture2D<float4> NativeColor : register(t2);
+#if NR_EDGE_DEPTH
+Texture2D<float4> DepthInput : register(t3);
+#endif
 RWTexture2D<float4> Destination : register(u0);
 cbuffer ResampleConstants : register(b0)
 {
@@ -21,6 +34,16 @@ cbuffer ResampleConstants : register(b0)
     float ColorStrength;
     float DetailStrength;
     float ColourCoupling;
+    float EdgeProtection;
+#if NR_EDGE_DEPTH
+    uint DepthAvailable;   // c3.w; keep before uint2 values to avoid padding
+    uint2 DepthOrigin;     // c4.xy
+    uint2 DepthExtent;     // c4.zw
+    float EdgeThickness;   // c5.x; 0..6 display pixels
+    float EdgeShift;       // c5.y; negative outward, positive inward
+    float EdgeSoftness;    // c5.z; 0..1 mask feather
+    uint DepthInverted;    // c5.w
+#endif
 };
 float4 LoadClamped(int2 p)
 {
@@ -54,6 +77,22 @@ float4 Bilinear(float2 p)
         lerp(LoadClamped(b+int2(0,1)),LoadClamped(b+1),f.x),f.y);
 }
 float3 NativeAt(int2 p) { return NativeColor.Load(int3(clamp(p,0,int2(DestinationSize)-1),0)).rgb; }
+float3 MappedAt(Texture2D<float4> tex, int2 p)
+{
+    p = clamp(p,0,int2(DestinationSize)-1);
+    if (any(SourceExtent > DestinationSize)) return SampleArea(tex,uint2(p)).rgb;
+    float2 position = (float2(p)+0.5)*float2(SourceExtent)/float2(DestinationSize)-0.5;
+    return SampleSmall(tex,position).rgb;
+}
+#if NR_EDGE_DEPTH
+float DepthAt(int2 p)
+{
+    int2 displayPixel = clamp(p,0,int2(DestinationSize)-1);
+    int2 depthPixel = clamp(int2((float2(displayPixel)+0.5)*float2(DepthExtent)/float2(DestinationSize)),
+        0,int2(DepthExtent)-1);
+    return DepthInput.Load(int3(int2(DepthOrigin)+depthPixel,0)).r;
+}
+#endif
 [RootSignature(ROOT_SIGNATURE)]
 [numthreads(8,8,1)]
 void Resample(uint3 id : SV_DispatchThreadID)
@@ -81,14 +120,87 @@ void Resample(uint3 id : SV_DispatchThreadID)
     }
     const float3 luma = float3(0.2126,0.7152,0.0722);
     float4 native = NativeColor.Load(int3(pixel,0));
+#if NR_EDGE_DEPTH
+    const bool visualizeEdgeMask = EdgeProtection < 0 && DepthAvailable != 0;
+    float depthEdge = 0;
+    float edgeStrength = saturate(abs(EdgeProtection));
+    float edgeThickness = clamp(EdgeThickness,0,6);
+    float edgeShift = clamp(EdgeShift,-6,6);
+    float edgeSoftness = saturate(EdgeSoftness);
+    if (EdgeProtection != 0 && DepthAvailable != 0 && edgeThickness > 0)
+    {
+        // Sample at most four rings spanning the active shifted mask. Scanning all
+        // twelve radii at native ultrawide resolution can starve presentation.
+        static const int2 directions[8] = {
+            int2(-1,-1),int2(0,-1),int2(1,-1),int2(-1,0),
+            int2(1,0),int2(-1,1),int2(0,1),int2(1,1) };
+        float centerDepth = DepthAt(int2(pixel));
+        float maxDepthJump = 0;
+        int firstRadius = max(1,(int)floor(max(abs(edgeShift)-edgeThickness,0)));
+        int lastRadius = min(12,(int)ceil(abs(edgeShift)+edgeThickness));
+        int ringCount = min(lastRadius-firstRadius+1,4);
+        [unroll] for (int sample=0; sample<4; ++sample)
+        {
+            if (sample >= ringCount) break;
+            int radius = ringCount == 1 ? firstRadius :
+                firstRadius+((lastRadius-firstRadius)*sample+(ringCount-1)/2)/(ringCount-1);
+            [unroll] for (int direction=0; direction<8; ++direction)
+            {
+                int2 neighborPixel = int2(pixel)+directions[direction]*radius;
+                float neighborDepth = DepthAt(neighborPixel);
+                float depthJump = abs(neighborDepth-centerDepth) /
+                    max(max(abs(neighborDepth),abs(centerDepth)),1e-3);
+                bool centerIsNearer = DepthInverted != 0 ? centerDepth > neighborDepth : centerDepth < neighborDepth;
+                float signedDistance = centerIsNearer ? float(radius) : -float(radius);
+                float distance = abs(signedDistance-edgeShift);
+                float feather = 1+edgeSoftness*edgeThickness;
+                float coverage = distance <= edgeThickness+1-feather ? 1 :
+                    saturate((edgeThickness+1-distance)/feather);
+                maxDepthJump = max(maxDepthJump,depthJump*coverage);
+            }
+        }
+        depthEdge = smoothstep(0.03,0.15,maxDepthJump);
+    }
+#else
+    const bool visualizeEdgeMask = false;
+#endif
     // Zero transfer bypasses the neural edit, not the independent sharpening.
-    if ((TransferStrength == 0 && Sharpness == 0) || DetailStrength == 0) { Destination[target] = native; return; }
+    if (((TransferStrength == 0 && Sharpness == 0) || DetailStrength == 0) && !visualizeEdgeMask)
+        { Destination[target] = native; return; }
     const bool supersampled = any(SourceExtent > DestinationSize);
     float3 input = (supersampled ? SampleArea(SmallInput,pixel) : SampleSmall(SmallInput,position)).rgb;
     float3 output = (supersampled ? SampleArea(Source,pixel) : SampleSmall(Source,position)).rgb;
     float3 edit = output - (FilterMode == 1 ? input : native.rgb);
     float yEdit = dot(edit,luma);
+#if NR_EDGE_DEPTH
+    // Detect strong edges introduced by this pass but absent from its exact
+    // input. These include displaced temporal silhouettes outside current depth.
+    float residualEdge = 0;
+    if (EdgeProtection != 0)
+    {
+        static const int2 cross[4] = {int2(-1,0),int2(1,0),int2(0,-1),int2(0,1)};
+        float outputY = dot(output,luma);
+        float nativeY = dot(native.rgb,luma);
+        [unroll] for (int direction=0; direction<4; ++direction)
+        {
+            float neighborOutputY = dot(MappedAt(Source,int2(pixel)+cross[direction]),luma);
+            float neighborNativeY = dot(NativeAt(int2(pixel)+cross[direction]),luma);
+            float outputGradient = abs(outputY-neighborOutputY);
+            float nativeGradient = abs(nativeY-neighborNativeY);
+            float signal = max(max(abs(nativeY),abs(neighborNativeY)),0.1);
+            float introduced = max(outputGradient-nativeGradient*1.25,0)/(signal+0.05);
+            residualEdge = max(residualEdge,smoothstep(0.04,0.18,introduced));
+        }
+    }
+    float protectionMask = max(depthEdge,residualEdge);
+    protectionMask = lerp(protectionMask,sqrt(saturate(protectionMask)),edgeSoftness);
+    // Reduce only later-pass neural transfer where the combined mask rejects it.
+    // The signed value carries visualization state; its magnitude remains active.
+    float effectiveTransfer = TransferStrength*(1-protectionMask*edgeStrength);
+    float3 result = native.rgb + (yEdit + (edit-yEdit)*ColorStrength)*effectiveTransfer;
+#else
     float3 result = native.rgb + (yEdit + (edit-yEdit)*ColorStrength)*TransferStrength;
+#endif
     // Retain the residual highlight guard without clamping signed scRGB.
     float origY = dot(max(native.rgb,0),luma);
     float inY = dot(max(input,0),luma), outY = dot(max(output,0),luma);
@@ -125,5 +237,13 @@ void Resample(uint3 id : SV_DispatchThreadID)
         float3 coupled = native.rgb + (result - native.rgb) * DetailStrength;
         result = stable + (coupled - stable) * ColourCoupling;
     }
+#if NR_EDGE_DEPTH
+    if (visualizeEdgeMask)
+    {
+        float visibility = protectionMask*edgeStrength;
+        Destination[target] = float4(lerp(result,float3(0,1,0),visibility),native.a);
+        return;
+    }
+#endif
     Destination[target] = float4(result,native.a);
 }

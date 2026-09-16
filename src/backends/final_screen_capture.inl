@@ -102,7 +102,8 @@ void final_screen(reshade::api::effect_runtime *runtime)
         set.unsafe_tracking = true; fail("Final capture submission/fence failed; resources retained safely."); return;
     }
     if (phase == 1) {
-        final_timing.start(copy_started,g_capture_skipped.load(),g_successful_evaluations.load());
+        final_timing.start(copy_started,g_capture_skipped.load(),g_successful_evaluations.load(),
+            std::clamp(field<unsigned>(g_target_module,0x266FA4),1u,10u));
         if (final_timing.expired(GetTickCount64())) { fail("ON recording exceeded 500 ms; NR was not disabled."); return; }
         g_capture_off_until.store(final_timing.deadline);
         final_phase.store(2); armed.store(false); status.store(2);

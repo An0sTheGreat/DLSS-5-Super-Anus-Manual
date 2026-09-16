@@ -109,6 +109,9 @@ bool g_render_mutex_initialized = false;
 reshade::api::device *g_pipeline_device = nullptr;
 reshade::api::pipeline_layout g_pipeline_layout = {};
 reshade::api::pipeline g_pipeline = {};
+reshade::api::pipeline_layout g_edge_pipeline_layout = {};
+reshade::api::pipeline g_edge_pipeline = {};
+constexpr std::uint32_t kEdgeResampleConstantCount = 24;
 std::array<ResourceSet, kMaximumResourceSets> g_resource_sets = {};
 std::array<TrackedCommandList, kMaximumTrackedCommandLists> g_tracked_command_lists = {};
 std::array<TrackedQueue, kMaximumQueues> g_tracked_queues = {};
@@ -215,9 +218,10 @@ TrackedCommandList *resolve_evaluation_command_locked(void *native)
 
 bool create_pipeline(reshade::api::device *device)
 {
-    if (g_pipeline.handle != 0 && g_pipeline_device == device)
+    if (g_pipeline.handle != 0 && g_edge_pipeline.handle != 0 && g_pipeline_device == device)
         return true;
-    if (g_pipeline.handle != 0 || g_pipeline_layout.handle != 0)
+    if (g_pipeline.handle != 0 || g_pipeline_layout.handle != 0 ||
+        g_edge_pipeline.handle != 0 || g_edge_pipeline_layout.handle != 0)
         return false;
 
     const reshade::api::descriptor_range srv_range = {
@@ -228,20 +232,39 @@ bool create_pipeline(reshade::api::device *device)
         0, 0, 0, 1, reshade::api::shader_stage::all_compute, 1,
         reshade::api::descriptor_type::texture_unordered_access_view
     };
-    const reshade::api::constant_range constants = {
-        0, 0, 0, 14, reshade::api::shader_stage::all_compute
+    const reshade::api::constant_range base_constants = {
+        0, 0, 0, 15, reshade::api::shader_stage::all_compute
+    };
+    const reshade::api::constant_range edge_constants = {
+        0, 0, 0, kEdgeResampleConstantCount, reshade::api::shader_stage::all_compute
     };
     auto input_range = srv_range; input_range.dx_register_index = 1;
     auto native_range = srv_range; native_range.dx_register_index = 2;
-    const reshade::api::pipeline_layout_param params[] = {
+    auto depth_range = srv_range; depth_range.dx_register_index = 3;
+    const reshade::api::pipeline_layout_param base_params[] = {
         reshade::api::pipeline_layout_param(1, &srv_range),
         reshade::api::pipeline_layout_param(1, &uav_range),
-        reshade::api::pipeline_layout_param(constants),
+        reshade::api::pipeline_layout_param(base_constants),
         reshade::api::pipeline_layout_param(1, &input_range),
         reshade::api::pipeline_layout_param(1, &native_range),
     };
-    if (!device->create_pipeline_layout(static_cast<std::uint32_t>(std::size(params)), params, &g_pipeline_layout))
+    const reshade::api::pipeline_layout_param edge_params[] = {
+        reshade::api::pipeline_layout_param(1, &srv_range),
+        reshade::api::pipeline_layout_param(1, &uav_range),
+        reshade::api::pipeline_layout_param(edge_constants),
+        reshade::api::pipeline_layout_param(1, &input_range),
+        reshade::api::pipeline_layout_param(1, &native_range),
+        reshade::api::pipeline_layout_param(1, &depth_range),
+    };
+    if (!device->create_pipeline_layout(static_cast<std::uint32_t>(std::size(base_params)),
+            base_params, &g_pipeline_layout))
         return false;
+    if (!device->create_pipeline_layout(static_cast<std::uint32_t>(std::size(edge_params)),
+            edge_params, &g_edge_pipeline_layout))
+    {
+        device->destroy_pipeline_layout(g_pipeline_layout); g_pipeline_layout = {};
+        return false;
+    }
 
     reshade::api::shader_desc shader = {
         g_neural_resample_shader, g_neural_resample_shader_size, "Resample"
@@ -252,7 +275,23 @@ bool create_pipeline(reshade::api::device *device)
     if (!device->create_pipeline(g_pipeline_layout, 1, &subobject, &g_pipeline))
     {
         device->destroy_pipeline_layout(g_pipeline_layout);
+        device->destroy_pipeline_layout(g_edge_pipeline_layout);
         g_pipeline_layout = {};
+        g_edge_pipeline_layout = {};
+        return false;
+    }
+    reshade::api::shader_desc edge_shader = {
+        g_neural_resample_edge_shader, g_neural_resample_edge_shader_size, "Resample"
+    };
+    const reshade::api::pipeline_subobject edge_subobject = {
+        reshade::api::pipeline_subobject_type::compute_shader, 1, &edge_shader
+    };
+    if (!device->create_pipeline(g_edge_pipeline_layout, 1, &edge_subobject, &g_edge_pipeline))
+    {
+        device->destroy_pipeline(g_pipeline);
+        device->destroy_pipeline_layout(g_pipeline_layout);
+        device->destroy_pipeline_layout(g_edge_pipeline_layout);
+        g_pipeline = {}; g_pipeline_layout = {}; g_edge_pipeline_layout = {};
         return false;
     }
     g_pipeline_device = device;
@@ -940,6 +979,8 @@ bool close_quiescent_private_caches(reshade::api::device *device)
         { owned[i] = g_tracked_queues[i]; g_tracked_queues[i] = {}; }
     reshade::api::pipeline pipeline = {};
     reshade::api::pipeline_layout layout = {};
+    reshade::api::pipeline edge_pipeline = {};
+    reshade::api::pipeline_layout edge_layout = {};
     reshade::api::pipeline capture_pipeline = {};
     reshade::api::pipeline_layout capture_layout = {};
     if (capture::pipeline_device == device)
@@ -950,7 +991,9 @@ bool close_quiescent_private_caches(reshade::api::device *device)
     if (g_pipeline_device == device)
     {
         pipeline = g_pipeline; layout = g_pipeline_layout;
-        g_pipeline = {}; g_pipeline_layout = {}; g_pipeline_device = nullptr;
+        edge_pipeline = g_edge_pipeline; edge_layout = g_edge_pipeline_layout;
+        g_pipeline = {}; g_pipeline_layout = {};
+        g_edge_pipeline = {}; g_edge_pipeline_layout = {}; g_pipeline_device = nullptr;
     }
 #ifdef NR_EXPERIMENTAL_DX11
     g_scale_history.forget(reinterpret_cast<std::uintptr_t>(device));
@@ -959,6 +1002,8 @@ bool close_quiescent_private_caches(reshade::api::device *device)
     LeaveCriticalSection(&g_render_mutex);
     if (pipeline.handle) device->destroy_pipeline(pipeline);
     if (layout.handle) device->destroy_pipeline_layout(layout);
+    if (edge_pipeline.handle) device->destroy_pipeline(edge_pipeline);
+    if (edge_layout.handle) device->destroy_pipeline_layout(edge_layout);
     if (capture_pipeline.handle) device->destroy_pipeline(capture_pipeline);
     if (capture_layout.handle) device->destroy_pipeline_layout(capture_layout);
     for (const auto &tracked : owned)
@@ -1308,7 +1353,12 @@ void dispatch_resample(
     reshade::api::resource_view native_color = {},
     std::uint32_t destination_x = 0, std::uint32_t destination_y = 0,
     float transfer = 1.0f, float color_strength = 1.0f,
-    float detail = 1.0f, float coupling = 0.0f)
+    float detail = 1.0f, float coupling = 0.0f, float edge_protection = 0.0f,
+    reshade::api::resource_view depth_input = {},
+    std::uint32_t depth_x = 0, std::uint32_t depth_y = 0,
+    std::uint32_t depth_width = 0, std::uint32_t depth_height = 0,
+    float edge_thickness = 1.0f, float edge_shift = 0.0f, float edge_softness = 0.0f,
+    std::uint32_t depth_inverted = 0)
 {
     const reshade::api::descriptor_table_update source_update = {
         {}, 0, 0, 1, reshade::api::descriptor_type::texture_shader_resource_view, &source
@@ -1316,26 +1366,41 @@ void dispatch_resample(
     const reshade::api::descriptor_table_update destination_update = {
         {}, 0, 0, 1, reshade::api::descriptor_type::texture_unordered_access_view, &destination
     };
+    const bool depth_available = depth_input.handle && depth_width && depth_height;
     const std::uint32_t constants[] = {
         source_x, source_y, source_width, source_height,
         destination_width, destination_height,
         filter_mode, std::bit_cast<std::uint32_t>(sharpness), destination_x, destination_y,
         std::bit_cast<std::uint32_t>(transfer), std::bit_cast<std::uint32_t>(color_strength),
-        std::bit_cast<std::uint32_t>(detail), std::bit_cast<std::uint32_t>(coupling)
+        std::bit_cast<std::uint32_t>(detail), std::bit_cast<std::uint32_t>(coupling),
+        std::bit_cast<std::uint32_t>(edge_protection),
+        depth_available ? 1u : 0u, depth_x, depth_y, depth_width, depth_height,
+        std::bit_cast<std::uint32_t>(edge_thickness), std::bit_cast<std::uint32_t>(edge_shift),
+        std::bit_cast<std::uint32_t>(edge_softness),
+        depth_inverted
     };
+    static_assert(std::size(constants) == kEdgeResampleConstantCount);
 
-    cmd_list->bind_pipeline(reshade::api::pipeline_stage::all_compute, g_pipeline);
-    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, g_pipeline_layout, 0, source_update);
-    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, g_pipeline_layout, 1, destination_update);
-    cmd_list->push_constants(reshade::api::shader_stage::all_compute, g_pipeline_layout, 2, 0, 14, constants);
+    const auto pipeline = depth_available ? g_edge_pipeline : g_pipeline;
+    const auto layout = depth_available ? g_edge_pipeline_layout : g_pipeline_layout;
+    cmd_list->bind_pipeline(reshade::api::pipeline_stage::all_compute, pipeline);
+    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, layout, 0, source_update);
+    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, layout, 1, destination_update);
+    cmd_list->push_constants(reshade::api::shader_stage::all_compute, layout, 2, 0,
+        depth_available ? kEdgeResampleConstantCount : 15, constants);
     // Bind valid descriptors even in branches which do not read these textures.
     if (!small_input.handle) small_input = source;
     if (!native_color.handle) native_color = source;
     auto extra_update = source_update;
     extra_update.descriptors = &small_input;
-    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, g_pipeline_layout, 3, extra_update);
+    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, layout, 3, extra_update);
     extra_update.descriptors = &native_color;
-    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, g_pipeline_layout, 4, extra_update);
+    cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, layout, 4, extra_update);
+    if (depth_available)
+    {
+        extra_update.descriptors = &depth_input;
+        cmd_list->push_descriptors(reshade::api::shader_stage::all_compute, layout, 5, extra_update);
+    }
     cmd_list->dispatch((destination_width + 7) / 8, (destination_height + 7) / 8, 1);
 }
 
@@ -1888,6 +1953,21 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
 #endif
     if (!suppress_copyback)
     {
+        const bool visualize_edge_mask = g_visualize_edge_mask.load(std::memory_order_relaxed);
+        const int edge_protection_percent = g_edge_protection_percent.load(std::memory_order_relaxed);
+        const bool use_edge_depth = nr::uses_multipass_edge_depth(
+            evaluation_pass, edge_protection_percent, visualize_edge_mask);
+        const float edge_protection = use_edge_depth ?
+            nr::multipass_edge_mode(edge_protection_percent, visualize_edge_mask) : 0.0f;
+        const float edge_thickness = use_edge_depth ?
+            nr::multipass_edge_thickness(g_edge_thickness_percent.load(std::memory_order_relaxed)) : 0.0f;
+        const float edge_shift = use_edge_depth ? static_cast<float>(nr::clamp_multipass_edge_shift(
+            g_edge_shift_pixels.load(std::memory_order_relaxed))) : 0.0f;
+        const float edge_softness = use_edge_depth ? nr::multipass_edge_softness(
+            g_edge_softness_percent.load(std::memory_order_relaxed)) : 0.0f;
+        const auto edge_depth = use_edge_depth ?
+            (native_resolve_only ? sources->source_depth_srv : set->work_depth_srv) :
+            reshade::api::resource_view{};
         cmd_list->barrier(set->work_output,
             reshade::api::resource_usage::unordered_access,
             reshade::api::resource_usage::shader_resource_non_pixel);
@@ -1899,7 +1979,14 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
             static_cast<float>(controls.transfer) / 100.0f,
             static_cast<float>(controls.color) / 100.0f,
             static_cast<float>(controls.detail) / 100.0f,
-            static_cast<float>(controls.coupling) / 100.0f);
+            static_cast<float>(controls.coupling) / 100.0f,
+            edge_protection, edge_depth,
+            use_edge_depth && native_resolve_only ? depth_x : 0u,
+            use_edge_depth && native_resolve_only ? depth_y : 0u,
+            use_edge_depth ? (native_resolve_only ? depth_width : work_width) : 0u,
+            use_edge_depth ? (native_resolve_only ? depth_height : work_height) : 0u,
+            edge_thickness, edge_shift, edge_softness,
+            use_edge_depth && field<std::uint8_t>(input, 0x5C) != 0 ? 1u : 0u);
         cmd_list->barrier(output, reshade::api::resource_usage::unordered_access,
             reshade::api::resource_usage::unordered_access);
     }
@@ -2040,8 +2127,14 @@ void on_destroy_device(reshade::api::device *device)
             device->destroy_pipeline(g_pipeline);
         if (g_pipeline_layout.handle != 0)
             device->destroy_pipeline_layout(g_pipeline_layout);
+        if (g_edge_pipeline.handle != 0)
+            device->destroy_pipeline(g_edge_pipeline);
+        if (g_edge_pipeline_layout.handle != 0)
+            device->destroy_pipeline_layout(g_edge_pipeline_layout);
         g_pipeline = {};
         g_pipeline_layout = {};
+        g_edge_pipeline = {};
+        g_edge_pipeline_layout = {};
         g_pipeline_device = nullptr;
     }
     clear_device_tracking_locked(device);

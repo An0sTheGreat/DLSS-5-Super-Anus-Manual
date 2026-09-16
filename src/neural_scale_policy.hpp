@@ -30,6 +30,40 @@ inline constexpr bool uses_base_resolve(int transfer, int color, int sharpness)
     return transfer != 100 || color != 100 || sharpness != 0;
 }
 
+inline constexpr bool uses_multipass_edge_depth(
+    unsigned evaluation_pass, int strength, bool visualize)
+{
+    return evaluation_pass != 0 && (strength > 0 || visualize);
+}
+
+inline constexpr float multipass_edge_mode(int strength, bool visualize)
+{
+    const float normalized = static_cast<float>(std::clamp(strength, 0, 100)) / 100.0f;
+    return visualize ? -std::max(normalized, 0.0001f) : normalized;
+}
+
+inline constexpr int default_multipass_edge_thickness = 17;
+
+inline constexpr float multipass_edge_thickness(int percent)
+{
+    return static_cast<float>(std::clamp(percent, 0, 100)) * 6.0f / 100.0f;
+}
+
+inline constexpr int migrate_legacy_multipass_edge_thickness(int percent)
+{
+    return (std::clamp(percent, 0, 100) + 1) / 2;
+}
+
+inline constexpr float multipass_edge_softness(int percent)
+{
+    return static_cast<float>(std::clamp(percent, 0, 100)) / 100.0f;
+}
+
+inline constexpr int clamp_multipass_edge_shift(int pixels)
+{
+    return std::clamp(pixels, -6, 6);
+}
+
 inline constexpr std::uint32_t scaled_extent(std::uint32_t native_extent, int scale)
 {
     const auto scaled = (static_cast<std::uint64_t>(native_extent) *
