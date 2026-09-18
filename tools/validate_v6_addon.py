@@ -59,6 +59,8 @@ def main() -> None:
     parser.add_argument("--multipass-edge-release", action="store_true")
     parser.add_argument("--startup-history-preview", action="store_true")
     parser.add_argument("--startup-history-release", action="store_true")
+    parser.add_argument("--vram-warning-preview", action="store_true")
+    parser.add_argument("--vram-warning-release", action="store_true")
     parser.add_argument("--addon-version", default="1.0.3")
     args = parser.parse_args()
 
@@ -69,15 +71,17 @@ def main() -> None:
     pass_controls = (args.pass_controls_preview or args.pass_controls_release or
                      args.motion_runtime_release or args.slider_reset_release or
                      args.multipass_edge_release or args.startup_history_preview or
-                     args.startup_history_release)
+                     args.startup_history_release or args.vram_warning_preview or
+                     args.vram_warning_release)
     if args.integrated_release or pass_controls:
         assert not args.framegen_input_trace and args.experimental_dx11 and args.experimental_vulkan
         history_fix = b"NR BUILD ID: 1.0.3-pass-controls.10-history.1 module=" in addon.data
-        build_id = b"1.0.9-startup-history.1" if args.startup_history_release else b"1.0.8-startup-history.1" if args.startup_history_preview else b"1.0.8-multipass-edge.1" if args.multipass_edge_release else b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
+        build_id = b"1.0.9-vram-warning.2" if args.vram_warning_preview or args.vram_warning_release else b"1.0.9-startup-history.1" if args.startup_history_release else b"1.0.8-startup-history.1" if args.startup_history_preview else b"1.0.8-multipass-edge.1" if args.multipass_edge_release else b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
         assert b"NR BUILD ID: " + build_id in addon.data
         assert b"NR nested-source guard disabled:" in addon.data
-        if args.startup_history_preview or args.startup_history_release:
+        if args.startup_history_preview or args.startup_history_release or args.vram_warning_preview or args.vram_warning_release:
             for marker in (b"Neural Rendering Enabled On Launch",
+                           b"MULTI-PASS FAILURE DUE TO VRAM CONSUMPTION",
                            b"Multipass Edge Protection Enabled",
                            b"MultipassEdgeProtectionEnabled",
                            b"Reuse Game Motion",
@@ -104,11 +108,11 @@ def main() -> None:
         rva, size = addon.directory(2)
         assert new_start <= rva and rva + size <= new_end
         diagnostic = b"NR BUILD ID: 1.0.3-pass-controls.9-input-trace.1 module=" in addon.data
-        expected_build = 19 if args.startup_history_preview or args.startup_history_release else 18 if args.multipass_edge_release else 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
+        expected_build = 21 if args.vram_warning_preview or args.vram_warning_release else 19 if args.startup_history_preview or args.startup_history_release else 18 if args.multipass_edge_release else 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
         validate_version(base, addon, args.addon, expected_build,
-            release=args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release,
+            release=args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release or args.vram_warning_release,
             version=args.addon_version)
-        if args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release:
+        if args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release or args.vram_warning_release:
             assert b"NR pass metadata:" not in addon.data
         if diagnostic:
             assert b"NR pass metadata:" in addon.data

@@ -167,6 +167,7 @@ std::atomic_uint g_transition_generation = 0;
 std::atomic_uint64_t g_transition_native_frame = 0;
 std::atomic_uint g_transition_pass_mask = 0;
 std::atomic_uint g_quiesce_generation = 0;
+std::atomic_uint g_multipass_vram_failure_generation = 0;
 std::atomic_bool g_command_registry_warning_logged = false;
 std::atomic_bool g_hook_installed = true;
 HMODULE g_target_module = nullptr;
@@ -720,6 +721,22 @@ extern "C" __declspec(dllexport) std::uint64_t embedded_capture_api_codec(reshad
 
 void draw_startup_setting()
 {
+    if (nr::show_multipass_vram_failure(
+            g_multipass_vram_failure_generation.load(std::memory_order_acquire),
+            g_stream_generation.load(std::memory_order_relaxed)))
+    {
+        constexpr const char *warning = "MULTI-PASS FAILURE DUE TO VRAM CONSUMPTION";
+        const ImVec4 red(1.0f, 0.125f, 0.125f, 1.0f);
+        const ImVec2 start = ImGui::GetCursorPos();
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.35f);
+        ImGui::TextColored(red, "%s", warning);
+        const ImVec2 end = ImGui::GetCursorPos();
+        ImGui::SetCursorPos(ImVec2(start.x + 1.0f, start.y));
+        ImGui::TextColored(red, "%s", warning);
+        ImGui::SetCursorPos(end);
+        ImGui::PopFont();
+        ImGui::Spacing();
+    }
     bool start_enabled = g_start_neural_rendering_enabled.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Neural Rendering Enabled On Launch", &start_enabled))
     {
@@ -1560,7 +1577,13 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
-#if defined(NR_STARTUP_HISTORY_RELEASE)
+#if defined(NR_VRAM_WARNING_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.9: multipass VRAM failure warning, launch-state control, and Chained Temporal History.";
+#elif defined(NR_VRAM_WARNING_PREVIEW)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.9 preview: visible multipass VRAM failure warning.";
+#elif defined(NR_STARTUP_HISTORY_RELEASE)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 1.0.9: launch-state control, Chained Temporal History, and optional multipass edge masking.";
 #elif defined(NR_STARTUP_HISTORY_PREVIEW)
@@ -1651,7 +1674,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-#if defined(NR_STARTUP_HISTORY_RELEASE)
+#if defined(NR_VRAM_WARNING_RELEASE) || defined(NR_VRAM_WARNING_PREVIEW)
+            "NR BUILD ID: 1.0.9-vram-warning.2 module=%s config-schema=9.",
+#elif defined(NR_STARTUP_HISTORY_RELEASE)
             "NR BUILD ID: 1.0.9-startup-history.1 module=%s config-schema=9.",
 #elif defined(NR_STARTUP_HISTORY_PREVIEW)
             "NR BUILD ID: 1.0.8-startup-history.1 module=%s config-schema=9.",

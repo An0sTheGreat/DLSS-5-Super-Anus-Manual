@@ -128,6 +128,13 @@ int main()
     assert(nr::maximum_working_sets(4) == 12);
     assert(nr::maximum_working_sets(10) == 12);
     assert(nr::maximum_working_sets(99) == 12);
+    assert(!nr::show_multipass_vram_failure(0, 1));
+    assert(nr::show_multipass_vram_failure(7, 7));
+    assert(!nr::show_multipass_vram_failure(7, 8));
+    assert(!nr::multipass_vram_failure_recovered(7, 7, 1, true));
+    assert(!nr::multipass_vram_failure_recovered(7, 7, 4, false));
+    assert(!nr::multipass_vram_failure_recovered(7, 8, 4, true));
+    assert(nr::multipass_vram_failure_recovered(7, 7, 4, true));
     for (unsigned passes=1;passes<=10;++passes)
         for (int scale=25;scale<=150;++scale)
         {

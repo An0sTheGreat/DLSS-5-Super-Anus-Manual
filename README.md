@@ -4,7 +4,7 @@ An experimental 64-bit ReShade add-on that extends RenoDX DLSS with practical
 DLSS 5 Neural Rendering controls, cost scaling, presets, an integrated DX11
 bridge, and PNG screenshot pairs.
 
-The current standalone release is **v1.0.9.19**. Download the loose `.addon64`
+The current standalone release is **v1.0.9.21**. Download the loose `.addon64`
 file from the [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/releases)
 page for manual installation.
 

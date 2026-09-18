@@ -1270,6 +1270,9 @@ ResourceSet *find_or_create_resource_set(
     if (!allocation_fits(used_bytes, requested_bytes, working_budget))
     {
         g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
+        if (field<unsigned>(g_target_module,0x266FA4) > 1)
+            g_multipass_vram_failure_generation.store(
+                g_stream_generation.load(std::memory_order_relaxed), std::memory_order_release);
         log_message(reshade::log::level::warning,
             "NR admission rejected: layout=%s requested=%llu KiB cached=%llu KiB limit=%llu KiB usage=%llu MiB budget=%llu MiB reserve=%llu MiB.",
             native_resolve_only ? "native-controls" : "scaled",
@@ -1942,6 +1945,11 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     }
     history->generation = generation; // Failed records never consume the reset.
     g_effective_scale.store(native_resolve_only ? 100 : scale_percent, std::memory_order_relaxed);
+    unsigned failed_generation = g_multipass_vram_failure_generation.load(std::memory_order_acquire);
+    if (nr::multipass_vram_failure_recovered(
+            failed_generation, generation, pass_count, g_multipass_groups.complete()))
+        g_multipass_vram_failure_generation.compare_exchange_strong(
+            failed_generation, 0, std::memory_order_release, std::memory_order_relaxed);
     if (trace_this_call)
         log_text(reshade::log::level::info,
             "RenoDX Neural Resolution: [8/9 evaluation] scaled Neural Rendering evaluation returned successfully.");

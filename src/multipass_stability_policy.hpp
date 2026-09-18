@@ -48,6 +48,21 @@ inline constexpr unsigned maximum_working_sets(unsigned pass_count)
     return std::clamp(pass_count * 3u, 4u, 12u);
 }
 
+inline constexpr bool show_multipass_vram_failure(unsigned failure_generation,
+                                                   unsigned current_generation)
+{
+    return failure_generation != 0 && failure_generation == current_generation;
+}
+
+inline constexpr bool multipass_vram_failure_recovered(unsigned failure_generation,
+                                                        unsigned current_generation,
+                                                        unsigned pass_count,
+                                                        bool group_complete)
+{
+    return pass_count > 1 && group_complete &&
+        show_multipass_vram_failure(failure_generation, current_generation);
+}
+
 inline bool prewarm_slot_available(bool pooled, bool retiring, bool sources_match)
 {
     return !retiring && (pooled || sources_match);
