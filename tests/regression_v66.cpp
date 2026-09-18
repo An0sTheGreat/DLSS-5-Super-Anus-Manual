@@ -125,10 +125,11 @@ static void test_pass_controls()
 
 static void test_edge_protection_state()
 {
-    assert(!nr::uses_multipass_edge_depth(0, 100, true));
-    assert(!nr::uses_multipass_edge_depth(1, 0, false));
-    assert(nr::uses_multipass_edge_depth(1, 1, false));
-    assert(nr::uses_multipass_edge_depth(1, 0, true));
+    assert(!nr::uses_multipass_edge_depth(true, 0, 100, true));
+    assert(!nr::uses_multipass_edge_depth(true, 1, 0, false));
+    assert(nr::uses_multipass_edge_depth(true, 1, 1, false));
+    assert(nr::uses_multipass_edge_depth(true, 1, 0, true));
+    assert(!nr::uses_multipass_edge_depth(false, 1, 100, true));
     assert(nr::multipass_edge_mode(0, false) == 0.0f);
     assert(nr::multipass_edge_mode(100, false) == 1.0f);
     assert(nr::multipass_edge_mode(0, true) < 0.0f);
@@ -155,8 +156,11 @@ static void test_edge_protection_state()
         int thickness = nr::default_multipass_edge_thickness;
         int softness = 0;
         int shift = 0;
+        bool enabled = true;
         bool visualize = false;
-        assert(!draw_multipass_edge_protection(true, passes, strength));
+        assert(!draw_multipass_edge_enabled(true, enabled));
+        assert((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) == 0);
+        assert(!draw_multipass_edge_protection(enabled, passes, strength));
         assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
         assert(!draw_multipass_edge_thickness(true, passes, thickness));
         assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
@@ -166,11 +170,11 @@ static void test_edge_protection_state()
         assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
         assert(!draw_multipass_edge_visualizer(true, passes, visualize));
         assert(((ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) == (passes == 1));
-        assert(strength == 50 && thickness == nr::default_multipass_edge_thickness && softness == 0 && shift == 0);
+        assert(enabled && strength == 50 && thickness == nr::default_multipass_edge_thickness && softness == 0 && shift == 0);
         assert(!visualize);
         ImGui::End(); ImGui::Render(); ImGui::DestroyContext();
     }
-    std::puts("Multipass edge protection/thickness/softness/shift: ranges and defaults passed; visible but disabled at one pass.");
+    std::puts("Multipass edge master/protection/thickness/softness/shift: ranges and defaults passed; child controls disabled at one pass.");
 }
 
 static std::map<std::string,int> section_config;
@@ -439,10 +443,13 @@ int main()
     for (unsigned pass = 1; pass < 10; ++pass) assert(nr::uses_evaluation_working_path(100, pass));
     assert(nr::scaled_extent(3840,150) == 5760 && nr::scaled_extent(2160,25) == 540);
     using nr::MultipassMotionMode;
+    assert(nr::default_multipass_motion_mode == MultipassMotionMode::chained_temporal_history);
     for (unsigned pass = 0; pass < 10; ++pass)
     {
         assert(nr::motion_resample_filter(MultipassMotionMode::reuse_game_motion, pass) == 3);
         assert(!nr::reset_later_pass_history(MultipassMotionMode::reuse_game_motion, pass));
+        assert(nr::motion_resample_filter(MultipassMotionMode::chained_temporal_history, pass) == 3);
+        assert(!nr::reset_later_pass_history(MultipassMotionMode::chained_temporal_history, pass));
     }
     for (unsigned pass = 1; pass < 10; ++pass)
     {

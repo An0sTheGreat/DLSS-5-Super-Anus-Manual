@@ -7,9 +7,11 @@ static constinit nr::ScaleHistory embedded_initialization;
 int main()
 {
     using nr::MultipassMotionMode;
+    assert(nr::default_multipass_motion_mode == MultipassMotionMode::chained_temporal_history);
     for (auto mode : {MultipassMotionMode::reuse_game_motion,
                       MultipassMotionMode::zero_later_passes,
-                      MultipassMotionMode::zero_and_reset_later_passes})
+                      MultipassMotionMode::zero_and_reset_later_passes,
+                      MultipassMotionMode::chained_temporal_history})
         assert(nr::motion_resample_filter(mode, 0) == 3 &&
             !nr::reset_later_pass_history(mode, 0));
     for (unsigned pass = 1; pass < 10; ++pass)
@@ -17,12 +19,23 @@ int main()
         assert(nr::motion_resample_filter(MultipassMotionMode::reuse_game_motion, pass) == 3);
         assert(nr::motion_resample_filter(MultipassMotionMode::zero_later_passes, pass) == 5);
         assert(nr::motion_resample_filter(MultipassMotionMode::zero_and_reset_later_passes, pass) == 5);
+        assert(nr::motion_resample_filter(MultipassMotionMode::chained_temporal_history, pass) == 3);
         assert(!nr::reset_later_pass_history(MultipassMotionMode::reuse_game_motion, pass));
         assert(!nr::reset_later_pass_history(MultipassMotionMode::zero_later_passes, pass));
         assert(nr::reset_later_pass_history(MultipassMotionMode::zero_and_reset_later_passes, pass));
+        assert(!nr::reset_later_pass_history(MultipassMotionMode::chained_temporal_history, pass));
     }
     assert(nr::clamp_multipass_motion_mode(-1) == MultipassMotionMode::reuse_game_motion);
     assert(nr::clamp_multipass_motion_mode(99) == MultipassMotionMode::reuse_game_motion);
+    assert(nr::clamp_multipass_motion_mode(3) == MultipassMotionMode::chained_temporal_history);
+    assert(nr::startup_preset(false, 2) == 0);
+    assert(nr::startup_preset(true, 0) == 1);
+    assert(nr::startup_preset(true, 2) == 2);
+    assert(nr::startup_preset(true, 9) == 3);
+    assert(!nr::uses_multipass_edge_depth(false, 1, 100, true));
+    assert(!nr::uses_multipass_edge_depth(true, 0, 100, true));
+    assert(nr::uses_multipass_edge_depth(true, 1, 100, false));
+    assert(nr::uses_multipass_edge_depth(true, 1, 0, true));
     auto &history = embedded_initialization;
     assert(!history.find(0, 0));
     unsigned resets = 0;

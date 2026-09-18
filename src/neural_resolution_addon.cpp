@@ -149,9 +149,10 @@ std::atomic_int g_edge_protection_percent = 0;
 std::atomic_int g_edge_thickness_percent = nr::default_multipass_edge_thickness;
 std::atomic_int g_edge_softness_percent = 0;
 std::atomic_int g_edge_shift_pixels = 0;
+std::atomic_bool g_multipass_edge_protection_enabled = true;
 std::atomic_bool g_visualize_edge_mask = false;
 std::atomic<nr::MultipassMotionMode> g_multipass_motion_mode =
-    nr::MultipassMotionMode::reuse_game_motion;
+    nr::default_multipass_motion_mode;
 nr::PassControls g_pass_controls; // Protected by dx12::g_render_mutex after initialization.
 nr::PassSectionState g_pass_sections; // Overlay UI only after initialization.
 std::atomic_uint g_scale_generation = 1;
@@ -198,6 +199,7 @@ OverlayMessage g_overlay_message = OverlayMessage::none;
 ULONGLONG g_overlay_started = 0;
 std::atomic_uint g_overlay_pass_count = 1;
 int g_last_preset = 1;
+std::atomic_bool g_start_neural_rendering_enabled = true;
 bool g_preset_persistence_initialized = false;
 std::atomic_int g_queued_preset = -1;
 OverlayMessage g_queued_message = OverlayMessage::none;
@@ -716,6 +718,19 @@ extern "C" __declspec(dllexport) std::uint64_t embedded_capture_api_codec(reshad
 #include "backends/vulkan_native_backend.inl"
 #endif
 
+void draw_startup_setting()
+{
+    bool start_enabled = g_start_neural_rendering_enabled.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Neural Rendering Enabled On Launch", &start_enabled))
+    {
+        g_start_neural_rendering_enabled.store(start_enabled, std::memory_order_relaxed);
+        set_config_int("RenoDXNeuralResolution", "StartNeuralRenderingEnabled", start_enabled ? 1 : 0);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Controls the initial NR state on the next game launch.");
+    ImGui::Spacing();
+}
+
 void __fastcall draw_inline_settings(void *setting)
 {
     if (!setting) return;
@@ -762,15 +777,30 @@ void __fastcall draw_inline_settings(void *setting)
                     "NR multipass motion mode changed to %d; pass history will reset after the transition frame.",
                     static_cast<int>(selected));
             }
-            ImGui::TextWrapped("Controls motion after Pass 1. Reuse Game Motion is recommended.");
+            ImGui::TextWrapped("Controls motion after Pass 1. Chained Temporal History is recommended and keeps an independent history for each pass.");
             int edge_protection = g_edge_protection_percent.load(std::memory_order_relaxed);
             int edge_thickness = g_edge_thickness_percent.load(std::memory_order_relaxed);
             int edge_softness = g_edge_softness_percent.load(std::memory_order_relaxed);
             int edge_shift = g_edge_shift_pixels.load(std::memory_order_relaxed);
-            bool edge_changed = draw_multipass_edge_protection(detail_available, pass_count, edge_protection);
-            edge_changed |= draw_multipass_edge_thickness(detail_available, pass_count, edge_thickness);
-            edge_changed |= draw_multipass_edge_softness(detail_available, pass_count, edge_softness);
-            edge_changed |= draw_multipass_edge_shift(detail_available, pass_count, edge_shift);
+            bool edge_enabled = g_multipass_edge_protection_enabled.load(std::memory_order_relaxed);
+            if (draw_multipass_edge_enabled(detail_available, edge_enabled))
+            {
+                {
+                    ScopedLock lock(dx12::g_render_mutex);
+                    g_multipass_edge_protection_enabled.store(edge_enabled, std::memory_order_relaxed);
+                    const unsigned generation = g_stream_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+                    g_transition_generation.store(generation, std::memory_order_release);
+                    g_transition_native_frame.store(0, std::memory_order_release);
+                    g_transition_pass_mask.store(0, std::memory_order_release);
+                    g_effective_scale.store(100, std::memory_order_relaxed);
+                }
+                set_config_int("RenoDXNeuralResolution", "MultipassEdgeProtectionEnabled", edge_enabled ? 1 : 0);
+            }
+            const bool edge_controls_available = detail_available && edge_enabled;
+            bool edge_changed = draw_multipass_edge_protection(edge_controls_available, pass_count, edge_protection);
+            edge_changed |= draw_multipass_edge_thickness(edge_controls_available, pass_count, edge_thickness);
+            edge_changed |= draw_multipass_edge_softness(edge_controls_available, pass_count, edge_softness);
+            edge_changed |= draw_multipass_edge_shift(edge_controls_available, pass_count, edge_shift);
             if (edge_changed)
             {
                 apply_neural_detail_preset({g_resolve_mode.load(), g_transfer_percent.load(),
@@ -779,14 +809,16 @@ void __fastcall draw_inline_settings(void *setting)
                 save_neural_detail_preset(field<int>(g_target_module, kPresetIndexRva));
             }
             bool visualize_edge_mask = g_visualize_edge_mask.load(std::memory_order_relaxed);
-            if (draw_multipass_edge_visualizer(detail_available, pass_count, visualize_edge_mask))
+            if (draw_multipass_edge_visualizer(edge_controls_available, pass_count, visualize_edge_mask))
                 g_visualize_edge_mask.store(visualize_edge_mask, std::memory_order_relaxed);
-            if (visualize_edge_mask && pass_count > 1)
+            if (edge_enabled && visualize_edge_mask && pass_count > 1)
                 ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f),
                     "Green = transfer suppression from depth + residual edges");
-            ImGui::TextWrapped(pass_count > 1
-                ? "Uses game depth and pass-added edge rejection to suppress ringing and movement trails in Pass 2 and later. Pass 1 is unchanged."
-                : "Available when two or more Neural Rendering passes are active.");
+            ImGui::TextWrapped(!edge_enabled
+                ? "Multipass edge masking is fully bypassed."
+                : pass_count > 1
+                    ? "Uses game depth and pass-added edge rejection to suppress ringing and movement trails in Pass 2 and later. Pass 1 is unchanged."
+                    : "Available when two or more Neural Rendering passes are active.");
         }
         nr::PassControls controls;
         {
@@ -1437,6 +1469,11 @@ extern "C" __declspec(dllexport) void embedded_draw_inline_settings(void *settin
     draw_inline_settings(setting);
 }
 
+extern "C" __declspec(dllexport) void embedded_draw_startup_setting()
+{
+    draw_startup_setting();
+}
+
 extern "C" __declspec(dllexport) bool embedded_draw_native_slider_reset(void *setting)
 {
     return draw_native_slider_reset(setting);
@@ -1523,7 +1560,13 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
-#if defined(NR_MULTIPASS_EDGE_RELEASE)
+#if defined(NR_STARTUP_HISTORY_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.9: launch-state control, Chained Temporal History, and optional multipass edge masking.";
+#elif defined(NR_STARTUP_HISTORY_PREVIEW)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.0.8 preview: persistent startup NR state and Chained Temporal History.";
+#elif defined(NR_MULTIPASS_EDGE_RELEASE)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 1.0.8: preset-scoped multipass edge controls and corrected zero-pass NR capture.";
 #elif defined(NR_SLIDER_RESET_RELEASE)
@@ -1608,7 +1651,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-#if defined(NR_MULTIPASS_EDGE_RELEASE)
+#if defined(NR_STARTUP_HISTORY_RELEASE)
+            "NR BUILD ID: 1.0.9-startup-history.1 module=%s config-schema=9.",
+#elif defined(NR_STARTUP_HISTORY_PREVIEW)
+            "NR BUILD ID: 1.0.8-startup-history.1 module=%s config-schema=9.",
+#elif defined(NR_MULTIPASS_EDGE_RELEASE)
             "NR BUILD ID: 1.0.8-multipass-edge.1 module=%s config-schema=9.",
 #elif defined(NR_SLIDER_RESET_RELEASE)
             "NR BUILD ID: 1.0.6-slider-reset.1 module=%s config-schema=9.",
@@ -1662,12 +1709,18 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         g_resolve_mode.store(std::clamp(configured_resolve, 0, 1));
         g_transfer_percent.store(std::clamp(configured_transfer, 0, 200));
         g_color_percent.store(std::clamp(configured_color, 0, nr::maximum_color_percent));
-        int configured_motion = static_cast<int>(nr::MultipassMotionMode::reuse_game_motion);
+        int configured_motion = static_cast<int>(nr::default_multipass_motion_mode);
         get_config_int("RenoDXNeuralResolution", "MultipassMotionMode", configured_motion);
         g_multipass_motion_mode.store(nr::clamp_multipass_motion_mode(configured_motion));
+        int configured_start_enabled = 1;
+        get_config_int("RenoDXNeuralResolution", "StartNeuralRenderingEnabled", configured_start_enabled);
+        g_start_neural_rendering_enabled.store(configured_start_enabled != 0, std::memory_order_relaxed);
         int configured_edge_protection = 0;
         get_config_int("RenoDXNeuralResolution", "MultipassEdgeProtection", configured_edge_protection);
         g_edge_protection_percent.store(std::clamp(configured_edge_protection, 0, 100));
+        int configured_edge_enabled = 1;
+        get_config_int("RenoDXNeuralResolution", "MultipassEdgeProtectionEnabled", configured_edge_enabled);
+        g_multipass_edge_protection_enabled.store(configured_edge_enabled != 0, std::memory_order_relaxed);
         nr::load_pass_controls(g_pass_controls, &get_config_int);
         nr::load_pass_sections(g_pass_sections, &get_config_int);
         unsigned customized_passes = 0;
@@ -1714,8 +1767,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         saved_preset = std::clamp(saved_preset, 1, 3);
         g_last_preset = saved_preset;
         initialize_neural_detail_presets(saved_preset);
-        if (current != saved_preset || g_native_presets_scoped)
-            queue_preset(saved_preset, OverlayMessage::none);
+        const int initial_preset = nr::startup_preset(
+            g_start_neural_rendering_enabled.load(std::memory_order_relaxed), saved_preset);
+        if (current != initial_preset || (initial_preset != 0 && g_native_presets_scoped))
+            queue_preset(initial_preset, OverlayMessage::none);
         if (g_register_event_for_addon != nullptr)
         {
             g_register_event_for_addon(module, reshade::addon_event::reshade_overlay,

@@ -12,12 +12,14 @@ their behavior depends on the game pipeline.
 
 Multipass Motion appears directly below Hook Method:
 
-- **Reuse Game Motion (Recommended)** supplies the resampled game motion to every
-  pass and is the default.
+- **Reuse Game Motion** supplies the resampled game motion to every pass.
 - **Zero Later-Pass Motion** preserves the earlier behavior where only Pass 1
   receives game motion.
 - **Zero Motion + Reset History** also resets passes 2+ every evaluation. This is
   a diagnostic option that may shimmer or flicker.
+- **Chained Temporal History (Recommended)** supplies resampled game motion while
+  keeping an independent history for each pass. It is the default for new
+  configurations; an existing saved selection is retained.
 
 Changing this setting uses one native transition frame and resets pass history
 before managed processing resumes. The selection persists across launches.

@@ -57,6 +57,8 @@ def main() -> None:
     parser.add_argument("--motion-runtime-release", action="store_true")
     parser.add_argument("--slider-reset-release", action="store_true")
     parser.add_argument("--multipass-edge-release", action="store_true")
+    parser.add_argument("--startup-history-preview", action="store_true")
+    parser.add_argument("--startup-history-release", action="store_true")
     parser.add_argument("--addon-version", default="1.0.3")
     args = parser.parse_args()
 
@@ -66,13 +68,23 @@ def main() -> None:
     addon = PeImage(bytearray(args.addon.read_bytes()))
     pass_controls = (args.pass_controls_preview or args.pass_controls_release or
                      args.motion_runtime_release or args.slider_reset_release or
-                     args.multipass_edge_release)
+                     args.multipass_edge_release or args.startup_history_preview or
+                     args.startup_history_release)
     if args.integrated_release or pass_controls:
         assert not args.framegen_input_trace and args.experimental_dx11 and args.experimental_vulkan
         history_fix = b"NR BUILD ID: 1.0.3-pass-controls.10-history.1 module=" in addon.data
-        build_id = b"1.0.8-multipass-edge.1" if args.multipass_edge_release else b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
+        build_id = b"1.0.9-startup-history.1" if args.startup_history_release else b"1.0.8-startup-history.1" if args.startup_history_preview else b"1.0.8-multipass-edge.1" if args.multipass_edge_release else b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
         assert b"NR BUILD ID: " + build_id in addon.data
         assert b"NR nested-source guard disabled:" in addon.data
+        if args.startup_history_preview or args.startup_history_release:
+            for marker in (b"Neural Rendering Enabled On Launch",
+                           b"Multipass Edge Protection Enabled",
+                           b"MultipassEdgeProtectionEnabled",
+                           b"Reuse Game Motion",
+                           b"Chained Temporal History (Recommended)"):
+                assert marker in addon.data
+            assert b"Reuse Game Motion (Recommended)" not in addon.data
+            assert b"Start Neural Rendering Enabled" not in addon.data
         for diagnostic in (b"tlou2-boundary-trace", b"tlou2-nested-source", b"tlou2-input-trace",
                            b"NR boundary probe:", b"NR boundary tag:", b"NR boundary native-pre-submit:"):
             assert diagnostic not in addon.data, diagnostic
@@ -92,11 +104,11 @@ def main() -> None:
         rva, size = addon.directory(2)
         assert new_start <= rva and rva + size <= new_end
         diagnostic = b"NR BUILD ID: 1.0.3-pass-controls.9-input-trace.1 module=" in addon.data
-        expected_build = 18 if args.multipass_edge_release else 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
+        expected_build = 19 if args.startup_history_preview or args.startup_history_release else 18 if args.multipass_edge_release else 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
         validate_version(base, addon, args.addon, expected_build,
-            release=args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release,
+            release=args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release,
             version=args.addon_version)
-        if args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release:
+        if args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release:
             assert b"NR pass metadata:" not in addon.data
         if diagnostic:
             assert b"NR pass metadata:" in addon.data
@@ -130,7 +142,7 @@ def main() -> None:
             if base.data[offset] != addon.data[offset]:
                 actual_offsets.add(offset)
     assert actual_offsets <= allowed_offsets
-    assert len(PATCHES) == 10
+    assert len(PATCHES) == 11
 
     base_name_va = struct.unpack_from("<Q", base.data, name_pointer_offset)[0]
     base_name_rva = base_name_va - base.image_base

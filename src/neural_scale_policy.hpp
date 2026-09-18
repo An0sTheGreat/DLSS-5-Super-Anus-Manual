@@ -31,9 +31,9 @@ inline constexpr bool uses_base_resolve(int transfer, int color, int sharpness)
 }
 
 inline constexpr bool uses_multipass_edge_depth(
-    unsigned evaluation_pass, int strength, bool visualize)
+    bool enabled, unsigned evaluation_pass, int strength, bool visualize)
 {
-    return evaluation_pass != 0 && (strength > 0 || visualize);
+    return enabled && evaluation_pass != 0 && (strength > 0 || visualize);
 }
 
 inline constexpr float multipass_edge_mode(int strength, bool visualize)
@@ -81,19 +81,25 @@ enum class MultipassMotionMode : int
     reuse_game_motion = 0,
     zero_later_passes = 1,
     zero_and_reset_later_passes = 2,
+    chained_temporal_history = 3,
 };
+
+inline constexpr MultipassMotionMode default_multipass_motion_mode =
+    MultipassMotionMode::chained_temporal_history;
 
 inline constexpr MultipassMotionMode clamp_multipass_motion_mode(int mode)
 {
     return mode == 1 ? MultipassMotionMode::zero_later_passes :
         mode == 2 ? MultipassMotionMode::zero_and_reset_later_passes :
+        mode == 3 ? MultipassMotionMode::chained_temporal_history :
         MultipassMotionMode::reuse_game_motion;
 }
 
 inline constexpr unsigned motion_resample_filter(
     MultipassMotionMode mode, unsigned evaluation_pass)
 {
-    return evaluation_pass == 0 || mode == MultipassMotionMode::reuse_game_motion ?
+    return evaluation_pass == 0 || mode == MultipassMotionMode::reuse_game_motion ||
+        mode == MultipassMotionMode::chained_temporal_history ?
         3u : 5u; // bilinear / explicit zero fill
 }
 
@@ -102,5 +108,10 @@ inline constexpr bool reset_later_pass_history(
 {
     return evaluation_pass != 0 &&
         mode == MultipassMotionMode::zero_and_reset_later_passes;
+}
+
+inline constexpr int startup_preset(bool enabled, int saved_preset)
+{
+    return enabled ? std::clamp(saved_preset, 1, 3) : 0;
 }
 }

@@ -140,6 +140,24 @@ if /i "%~1"=="manager-release-1.0.8" (
  set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
  if not exist "%ROOT%build\manager-1.0.8-addon" mkdir "%ROOT%build\manager-1.0.8-addon" || exit /b 1
 )
+if /i "%~1"=="startup-history-preview" (
+ set "NR_OUTPUT=%ROOT%build\v108-startup-history-preview\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_PREVIEW"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan --startup-history-preview --addon-version 1.0.8"
+ set "NR_PATCH_FLAGS=--addon-build 19 --addon-version 1.0.8"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ if not exist "%ROOT%build\v108-startup-history-preview" mkdir "%ROOT%build\v108-startup-history-preview" || exit /b 1
+)
+if /i "%~1"=="manager-release-1.0.9" (
+ set "NR_OUTPUT=%ROOT%build\manager-1.0.9-addon\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan --startup-history-release --addon-version 1.0.9"
+ set "NR_PATCH_FLAGS=--addon-build 19 --addon-version 1.0.9 --release-version"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ if not exist "%ROOT%build\manager-1.0.9-addon" mkdir "%ROOT%build\manager-1.0.9-addon" || exit /b 1
+)
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe" /nologo /T cs_6_0 /E Resample /Fo "%ROOT%build\neural_resample_v66.cso" "%ROOT%src\neural_resample.hlsl" || exit /b 1
 python "%ROOT%tools\binary_to_header.py" "%ROOT%build\neural_resample_v66.cso" "%ROOT%src\neural_resample_shader.hpp" g_neural_resample_shader || exit /b 1
@@ -183,5 +201,7 @@ if /i "%~1"=="manager-release-1.0.3" call "%ROOT%scripts\test\test-vulkan-export
 if /i "%~1"=="manager-release-1.0.5" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.0.6" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.0.8" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
+if /i "%~1"=="startup-history-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
+if /i "%~1"=="manager-release-1.0.9" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 copy /y "%ROOT%build\minhook-api\LICENSE.txt" "%ROOT%build\dx11-experimental-minhook-LICENSE.txt" >nul || exit /b 1
 endlocal

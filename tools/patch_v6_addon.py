@@ -39,6 +39,7 @@ PATCHES = {
     0x09C815: (bytes.fromhex("E8 26 57 01 00"), "native_evaluation_gate", "call"),
     0x05C281: (bytes.fromhex("E8 FA 15 00 00"), "scaled_evaluate_create", "call"),
     0x05C3D2: (bytes.fromhex("E8 A9 14 00 00"), "scaled_evaluate_existing", "call"),
+    0x0A81A0: (bytes.fromhex("55 41 57 41 56"), "settings_top_bridge", "jmp"),
     0x0A85DF: (bytes.fromhex("49 83 BC 24 B8 00 00 00 10"), "settings_bridge", "call9"),
     0x0A8EC1: (bytes.fromhex("48 8B 05 38 81 1C 00 FF 90 10 03 00 00"), "native_slider_reset_bridge", "call13"),
     0x0AC0D0: (bytes.fromhex("55 41 57 41 56"), "init_device_bridge", "jmp"),

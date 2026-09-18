@@ -1956,6 +1956,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         const bool visualize_edge_mask = g_visualize_edge_mask.load(std::memory_order_relaxed);
         const int edge_protection_percent = g_edge_protection_percent.load(std::memory_order_relaxed);
         const bool use_edge_depth = nr::uses_multipass_edge_depth(
+            g_multipass_edge_protection_enabled.load(std::memory_order_relaxed),
             evaluation_pass, edge_protection_percent, visualize_edge_mask);
         const float edge_protection = use_edge_depth ?
             nr::multipass_edge_mode(edge_protection_percent, visualize_edge_mask) : 0.0f;

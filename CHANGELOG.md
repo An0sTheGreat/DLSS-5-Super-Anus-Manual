@@ -2,7 +2,14 @@
 
 All notable public changes are documented here.
 
-## [Unreleased]
+## [1.0.9.19] - 2026-09-17
+
+- Add a persistent startup toggle that chooses whether Neural Rendering begins
+  enabled with the last active preset or disabled when the game launches.
+- Add **Chained Temporal History** as the recommended fourth Multipass Motion
+  option and use it by default when no saved motion selection exists.
+- Move the launch-state toggle above the preset controls and add a persistent
+  master switch that completely bypasses multipass edge masking.
 
 ## [1.0.8.18] - 2026-09-15
 

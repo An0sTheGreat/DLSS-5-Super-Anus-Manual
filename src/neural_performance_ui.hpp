@@ -31,7 +31,15 @@ inline bool draw_neural_color_strength(int &color)
 inline bool draw_multipass_motion_mode(int &mode)
 {
     return ImGui::Combo("Multipass Motion", &mode,
-        "Reuse Game Motion (Recommended)\0Zero Later-Pass Motion\0Zero Motion + Reset History\0");
+        "Reuse Game Motion\0Zero Later-Pass Motion\0Zero Motion + Reset History\0Chained Temporal History (Recommended)\0");
+}
+
+inline bool draw_multipass_edge_enabled(bool available, bool &enabled)
+{
+    ImGui::BeginDisabled(!available);
+    const bool changed = ImGui::Checkbox("Multipass Edge Protection Enabled", &enabled);
+    ImGui::EndDisabled();
+    return changed;
 }
 
 inline bool draw_multipass_edge_protection(bool available, unsigned pass_count, int &strength)
