@@ -17,6 +17,7 @@ static void test_backend_status()
 {
     using namespace nr::backends;
     using reshade::api::device_api;
+    assert(runtime_status(device_api::d3d11, true, true).controls_available);
 #ifdef NR_DX11_GAME_TEST
     assert(!support(device_api::d3d11).evaluator_available); // Never DX12 resource dispatch.
     assert(!support(device_api::vulkan).evaluator_available);

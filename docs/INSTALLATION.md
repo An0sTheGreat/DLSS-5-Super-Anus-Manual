@@ -14,7 +14,8 @@
 - A compatible NVIDIA GPU, driver, and DLSS setup.
 - User-supplied compatible `nvngx_dlss.dll` and `nvngx_dlssnr.dll` files.
 - A game that supplies usable native DLSS inputs. DirectX 12 is the primary
-  path; DirectX 11 support uses the integrated experimental bridge.
+  path; DirectX 11 support requires the latest official external
+  [DLSS 5 Bridge](https://github.com/NIGos/dlss5-bridge/releases).
 
 ## Fresh installation
 
@@ -22,11 +23,12 @@
 2. Install ReShade with add-on support for the game's rendering API.
 3. Supply compatible `nvngx_dlss.dll` and `nvngx_dlssnr.dll` files from your own
    legitimate installation. This project does not provide them.
-4. Download the latest loose `renodx-dlss5-super-anus.addon64` file from GitHub Releases.
-5. Place `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
+4. For DX11, install the latest official DLSS 5 Bridge.
+5. Download the latest loose `renodx-dlss5-super-anus.addon64` file from GitHub Releases.
+6. Place `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
    directory, or into the add-on search path configured in ReShade.
-6. Start the game, open ReShade, and select the **RenoDX DLSS_A** tab.
-7. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the
+7. Start the game, open ReShade, and select the **RenoDX DLSS_A** tab.
+8. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the
    Runtime API section reports the expected presentation API.
 
 ReShade's loader path varies by game. `dxgi.dll`, `d3d11.dll`, or another proxy
@@ -60,7 +62,7 @@ ReShade configuration and should survive replacement.
 
 ## Basic verification
 
-After launch, search `ReShade.log` for `NR BUILD ID: 1.0.3` and
+After launch, search `ReShade.log` for `NR BUILD ID: 1.1.0-dx11-bridge-retention.2` and
 `NR COST SCALER 2:`. Then:
 
 1. Apply 75% with Matched Residual selected.

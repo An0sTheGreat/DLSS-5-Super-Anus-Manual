@@ -771,8 +771,7 @@ void __fastcall draw_inline_settings(void *setting)
     if (before_debug || before_advanced)
     {
         const unsigned pass_count = std::clamp(g_observed_pass_count.load(std::memory_order_relaxed), 1u, 10u);
-        const bool detail_available = status.controls_available &&
-            static_cast<reshade::api::device_api>(g_runtime_api.load()) == reshade::api::device_api::d3d12;
+        const bool detail_available = status.controls_available;
         if (before_debug)
         {
             int motion_mode = static_cast<int>(g_multipass_motion_mode.load(std::memory_order_relaxed));
@@ -1577,7 +1576,10 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
-#if defined(NR_VRAM_WARNING_RELEASE)
+#if defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.1.0: DX11 bridge controls and safe live multipass reduction.";
+#elif defined(NR_VRAM_WARNING_RELEASE)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 1.0.9: multipass VRAM failure warning, launch-state control, and Chained Temporal History.";
 #elif defined(NR_VRAM_WARNING_PREVIEW)
@@ -1674,7 +1676,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-#if defined(NR_VRAM_WARNING_RELEASE) || defined(NR_VRAM_WARNING_PREVIEW)
+#if defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
+            "NR BUILD ID: 1.1.0-dx11-bridge-retention.2 module=%s config-schema=9.",
+#elif defined(NR_VRAM_WARNING_RELEASE) || defined(NR_VRAM_WARNING_PREVIEW)
             "NR BUILD ID: 1.0.9-vram-warning.2 module=%s config-schema=9.",
 #elif defined(NR_STARTUP_HISTORY_RELEASE)
             "NR BUILD ID: 1.0.9-startup-history.1 module=%s config-schema=9.",

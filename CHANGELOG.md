@@ -2,6 +2,15 @@
 
 All notable public changes are documented here.
 
+## [1.1.0.23] - 2026-09-19
+
+- Enable Neural Resolution, detail, colour, edge, and per-pass controls for
+  DX11 games after a tracked evaluation from the official external DLSS 5 Bridge.
+- Keep same-generation Bridge working resources cached while Neural Rendering
+  remains active, preventing live cleanup when reducing the pass count.
+- Retain valid host-owned native features during active DX11 Bridge sessions,
+  preventing NVIDIA feature release during live 1 -> 2 -> 1 pass transitions.
+
 ## [1.0.9.19] - 2026-09-17
 
 - Add a persistent startup toggle that chooses whether Neural Rendering begins

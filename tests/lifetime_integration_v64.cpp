@@ -448,19 +448,35 @@ int main()
     assert(capture::slot == SIZE_MAX && !g_resource_sets[0].active && capture::status.load() == 5);
     final_block->Release(); // copy_fence was released by the real collector
 
-    // Native feature at 100% scale is not a disposable scaling texture.
+    // A bridge-backed 2 -> 1 transition keeps the host-owned second-pass
+    // feature across generation changes and idle maintenance.
     g_resource_sets[0] = feature(2);
+    g_resource_sets[0].allocation_generation = 10;
     g_resource_sets[0].last_use = 5000;
-    set_primary(g_resource_sets[0]);
+    std::array<NativeFeatureSlot, 1> bridge_passes;
+    bridge_passes[0].handle = g_resource_sets[0].native_handle;
+    bridge_passes[0].parameters = g_resource_sets[0].native_parameters;
+    native_slots(0x26D8D0) = {bridge_passes.data(), bridge_passes.data() + 1,
+        bridge_passes.data() + 1};
+    g_scale_generation = 11;
     g_scale_percent = 100;
+    g_runtime_api = static_cast<unsigned>(reshade::api::device_api::d3d11);
+    g_evaluation_device.observe(1, 1);
     collect_resources_locked(5001);
     assert(!g_resource_sets[0].retiring);
+    collect_resources_locked(9000);
+    assert(releases == 1 && g_resource_sets[0].active && !g_resource_sets[0].retiring);
     // Off must retire it after references/fences drain, even with no further NR calls.
     field<int>(g_target_module, kPresetIndexRva) = 0;
-    collect_resources_locked(5001);
+    collect_resources_locked(9001);
     for (unsigned q = 0; q < 2; ++q) complete_fence(fences[q], g_tracked_queues[q].serial);
-    collect_resources_locked(5002);
+    collect_resources_locked(9002);
     assert(releases == 2 && !g_resource_sets[0].active);
+    g_evaluation_device.forget(1);
+    g_runtime_api = 0;
+    g_scale_generation = 1;
+    native_slots(0x26D8D0) = {};
+    field<int>(g_target_module, kPresetIndexRva) = 1;
 
     std::array<NativeFeatureSlot, 3> retained;
     g_resource_sets[0] = feature(3);

@@ -23,6 +23,14 @@ inline bool retirement_candidate(bool valid, bool nr_enabled, int scale,
         (now >= last_use && now - last_use >= 2000);
 }
 
+inline bool pooled_retirement_candidate(bool keep_working_sets, bool same_generation,
+                                        bool bridge_backed_dx11,
+                                        std::uint64_t last_use, std::uint64_t now)
+{
+    return !keep_working_sets || !same_generation ||
+        (!bridge_backed_dx11 && now >= last_use && now - last_use >= 1000);
+}
+
 inline bool allocation_fits(std::uint64_t used, std::uint64_t requested, std::uint64_t budget)
 {
     return requested != 0 && used <= budget && requested <= budget - used;

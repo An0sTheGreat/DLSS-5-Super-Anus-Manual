@@ -475,6 +475,25 @@ NativeFeatureSlot native_primary_slot()
     return slot;
 }
 
+bool host_owns_native_feature(const ResourceSet &set)
+{
+    const auto primary = native_primary_slot();
+    if (primary.handle == set.native_handle && primary.parameters == set.native_parameters)
+        return true;
+    for (const auto rva : {0x26D8D0u, 0x26D8E8u})
+    {
+        const auto &slots = native_slots(rva);
+        const auto count = slots.count();
+        // Invalid bounds are already an unsafe hold in release_native_feature.
+        if (count == SIZE_MAX) return true;
+        for (std::size_t i = 0; i < count; ++i)
+            if (slots.begin[i].handle == set.native_handle &&
+                slots.begin[i].parameters == set.native_parameters)
+                return true;
+    }
+    return false;
+}
+
 // All accesses to native slots occur under the host's NR mutex. Evaluation
 // call sites already own it; maintenance acquires it BEFORE g_render_mutex.
 bool release_native_feature(ResourceSet &set)
@@ -750,7 +769,12 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
         if (record.active) recording_mask |= record.references.sets;
     unsigned active = 0, pinned = 0, retiring = 0, unsafe = 0, features = 0, pooled = 0;
     std::uint64_t bytes = 0;
-    const bool keep_working_sets = nr_enabled() && (nr::uses_scaled_path(g_scale_percent.load()) ||
+    const bool bridge_backed_dx11 =
+        static_cast<reshade::api::device_api>(g_runtime_api.load()) == reshade::api::device_api::d3d11 &&
+        g_evaluation_device.observed();
+    const bool active_nr = nr_enabled();
+    const bool keep_working_sets = active_nr && (bridge_backed_dx11 ||
+        nr::uses_scaled_path(g_scale_percent.load()) ||
         nr::uses_base_resolve(g_transfer_percent.load(), g_color_percent.load(), g_sharpness_percent.load()) ||
         g_observed_pass_count.load(std::memory_order_relaxed) > 1);
     for (std::size_t i = 0; i < g_resource_sets.size(); ++i)
@@ -762,9 +786,9 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
         // rebound without reallocating the large textures.
         if (set.pooled)
         {
-            if (!keep_working_sets ||
-                set.allocation_generation != g_scale_generation.load() ||
-                (now >= set.last_use && now - set.last_use >= 1000))
+            if (pooled_retirement_candidate(keep_working_sets,
+                    set.allocation_generation == g_scale_generation.load(),
+                    bridge_backed_dx11, set.last_use, now))
             {
                 if (destructive_actions < destruction_budget)
                 {
@@ -806,13 +830,22 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
         // deliberately holds discarded-only recordings rather than assuming an
         // unobserved native submission never happened.
         if (!referenced && set.queue_mask == 0) set.unsafe_tracking = true;
+        // The host keeps reduced pass slots available for later reuse. Releasing
+        // one during a live DX11 bridge session can deadlock inside NVIDIA NGX.
+        const bool keep_native_feature = set.native_feature && set.valid && active_nr &&
+            bridge_backed_dx11 && host_owns_native_feature(set);
+        if (keep_native_feature)
+        {
+            set.retiring = false;
+            set.retire_fences = {};
+        }
         // A replaced working set can begin real-fence retirement immediately.
         // Recording references still protect PRE-Reset and unsubmitted work;
-        // native feature retention keeps its existing idle policy.
+        // live bridge-owned native features are held by the guard above.
         const bool recyclable_working_set = !set.native_feature && set.queue_mask != 0;
-        if (!set.retiring && !referenced && !set.unsafe_tracking &&
+        if (!keep_native_feature && !set.retiring && !referenced && !set.unsafe_tracking &&
             (recyclable_working_set ||
-                retirement_candidate(set.valid, nr_enabled(), set.native_feature ? 99 : g_scale_percent.load(),
+                retirement_candidate(set.valid, active_nr, set.native_feature ? 99 : g_scale_percent.load(),
                     set.allocation_generation, g_scale_generation.load(), set.last_use, now)))
         {
             set.retiring = true;

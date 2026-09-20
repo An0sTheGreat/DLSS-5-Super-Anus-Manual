@@ -52,6 +52,13 @@ int main()
     // remains active and must not be repeatedly destroyed/re-created.
     assert(!retirement_candidate(true, true, 99, 1, 1, 100, 101));
 
+    // A bridge-backed 2 -> 1 pass change keeps the drained second-pass set cached.
+    assert(!pooled_retirement_candidate(true, true, true, 100, 5000));
+    assert(!pooled_retirement_candidate(true, true, false, 100, 1099));
+    assert(pooled_retirement_candidate(true, true, false, 100, 1100));
+    assert(pooled_retirement_candidate(false, true, true, 100, 101));
+    assert(pooled_retirement_candidate(true, false, true, 100, 101));
+
     constexpr std::uint64_t budget = 512ull << 20;
     assert(allocation_fits(0, budget, budget));
     assert(!allocation_fits(1, budget, budget));
