@@ -60,7 +60,7 @@ ReShade configuration and should survive replacement.
 
 ## Basic verification
 
-After launch, search `ReShade.log` for `NR BUILD ID: 1.1.1-dx11-neural-controls.1` and
+After launch, search `ReShade.log` for `NR BUILD ID: 1.1.2-integrated-feeder.1` and
 `NR COST SCALER 2:`. Then:
 
 1. Apply 75% with Matched Residual selected.

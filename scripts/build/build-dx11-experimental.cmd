@@ -178,6 +178,17 @@ if /i "%~1"=="manager-release-1.1.1" (
  set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
  if not exist "%ROOT%build\manager-1.1.1-addon" mkdir "%ROOT%build\manager-1.1.1-addon" || exit /b 1
 )
+if /i "%~1"=="manager-release-1.1.2" (
+ set "NR_OUTPUT=%ROOT%build\manager-1.1.2-addon\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE /DNR_VRAM_WARNING_RELEASE /DNR_DX11_BRIDGE_RETENTION_RELEASE /DNR_DX11_NEURAL_CONTROLS_RELEASE"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan --integrated-feeder-release --addon-version 1.1.2"
+ set "NR_PATCH_FLAGS=--addon-build 31 --addon-version 1.1.2 --release-version"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ set "NR_FEEDER_BUILD=1"
+ set NR_FEEDER_PATCH=--feeder-embedded "%ROOT%build\dlss5_feed_embedded.dll"
+ if not exist "%ROOT%build\manager-1.1.2-addon" mkdir "%ROOT%build\manager-1.1.2-addon" || exit /b 1
+)
 if /i "%~1"=="integrated-feeder-preview" (
  set "NR_OUTPUT=%ROOT%..\..\artifacts\integrated-feeder-preview\renodx-dlss5-super-anus.addon64"
  set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE /DNR_VRAM_WARNING_RELEASE /DNR_DX11_BRIDGE_RETENTION_RELEASE /DNR_DX11_NEURAL_CONTROLS_RELEASE"
@@ -253,6 +264,7 @@ if /i "%~1"=="startup-history-preview" call "%ROOT%scripts\test\test-vulkan-expo
 if /i "%~1"=="manager-release-1.0.9" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.1.0" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.1.1" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
+if /i "%~1"=="manager-release-1.1.2" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="integrated-feeder-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="vram-warning-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 copy /y "%ROOT%build\minhook-api\LICENSE.txt" "%ROOT%build\dx11-experimental-minhook-LICENSE.txt" >nul || exit /b 1

@@ -2,6 +2,14 @@
 
 All notable public changes are documented here.
 
+## [1.1.2.31] - 2026-09-21
+
+- Integrate DLSS5 Feeder for manager-configured non-DLSS DX11/DX12 games.
+- Bind embedded feeder events and configuration directly to the verified local
+  ReShade module and defer configuration until effect-runtime initialization.
+- Disable the embedded feeder's duplicate overlay, preventing the Home-key crash
+  while retaining all nine callbacks and frame delivery.
+
 ## [1.1.1.30] - 2026-09-20
 
 - Restore live Neural Transfer, Neural Colour, and pass-count changes in

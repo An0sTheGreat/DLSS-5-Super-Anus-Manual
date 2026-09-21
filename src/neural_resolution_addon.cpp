@@ -1684,7 +1684,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         }
         log_message(reshade::log::level::info,
 #if defined(NR_DX11_NEURAL_CONTROLS_RELEASE)
-            "NR BUILD ID: 1.1.1-dx11-neural-controls.1 module=%s config-schema=9.",
+            "NR BUILD ID: 1.1.2-integrated-feeder.1 module=%s config-schema=9.",
 #elif defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
             "NR BUILD ID: 1.1.0-dx11-bridge-retention.2 module=%s config-schema=9.",
 #elif defined(NR_VRAM_WARNING_RELEASE) || defined(NR_VRAM_WARNING_PREVIEW)
