@@ -270,6 +270,10 @@ static bool g_renodx_present = false;
 static bool g_renodx_lazy    = false;
 static bool g_renodx_v46     = false;
 static bool g_renodx_v47     = false;
+#ifdef FEED_EMBEDDED
+static bool g_renodx_config_pending = false;
+static bool g_renodx_config_api_warned = false;
+#endif
 
 // Does the add-on's string table hold this literal? The terminator is part of the
 // match, so a marker key can never be found inside a longer string that starts with
@@ -326,6 +330,40 @@ static void RenodxDefault(const char *key, const char *value, const char *why)
     }
     else
         Log("[feed] %s=%s (user-set; leaving it alone)", key, v);
+}
+
+static void ApplyRenodxConfiguration()
+{
+    if (g_renodx_lazy)
+        RenodxDefault("EnableHooks", "2", "NGX-only -- this feeder calls NGX directly, no Streamline");
+
+    // Every known add-on generation reads these two keys; make a fresh install
+    // deterministic. NeuralUplift on is the whole point of installing this feeder.
+    // NREnableUpscaling off matches the contract: this feeder always publishes 1:1
+    // DLAA (even below 100% work resolution -- DLSS runs at the reduced size and the
+    // feeder scales the result back itself), so upscaling could never engage, and
+    // v4.6 pairs its WIP upscaling path with a rejection latch that parks NR on the
+    // native path for the rest of the run. A build too old to know a key never reads
+    // it, so both writes are inert on older generations.
+    RenodxDefault("NeuralUplift", "1", "neural rendering on");
+    RenodxDefault("NREnableUpscaling", "0", "upscaling off; this feeder publishes a complete 1:1 DLAA contract");
+
+    // NRStyle is the add-on's own setting (v4.6+), changed from ITS overlay panel and applied at the
+    // next launch. On the reference machine (Metro 2033 Redux, Smooth Motion active),
+    // NRStyle=2 crashed the game 1-2 s into every boot with a null read on the present
+    // path -- landing in whichever module presented next (Luma once, the game's CRT with
+    // Luma removed), which made it look like anything BUT this setting. NRStyle=0 boots
+    // clean. Warn, do not rewrite: it is the user's explicit choice in the RenoDX panel,
+    // and the warning reaches both logs even when the game dies before any overlay.
+    if (g_renodx_v46)
+    {
+        char v[16];
+        size_t n = sizeof(v);
+        if (reshade::get_config_value(nullptr, "RenoDX.DLSS5", "NRStyle", v, &n) && atoi(v) == 2)
+            Warn("RenoDX.DLSS5 NRStyle=2 is set -- this crashed at startup on the reference machine "
+                 "(null read on the present path, blamed on whichever module presents next). If this "
+                 "game crashes on launch, set NRStyle=0 in ReShade.ini's [RenoDX.DLSS5] section.");
+    }
 }
 
 static char g_renodx_file[MAX_PATH] = "renodx-dlss5.addon64";   // the file actually found
@@ -411,36 +449,15 @@ static void DetectRenodxAddon()
       : g_renodx_lazy ? "v45+ (per-present rescan, lazy feature adoption; warm-up re-create skipped)"
                       : "classic (single hook pass; warm-up re-create stays on)");
 
-    if (g_renodx_lazy)
-        RenodxDefault("EnableHooks", "2", "NGX-only -- this feeder calls NGX directly, no Streamline");
-
-    // Every known add-on generation reads these two keys; make a fresh install
-    // deterministic. NeuralUplift on is the whole point of installing this feeder.
-    // NREnableUpscaling off matches the contract: this feeder always publishes 1:1
-    // DLAA (even below 100% work resolution -- DLSS runs at the reduced size and the
-    // feeder scales the result back itself), so upscaling could never engage, and
-    // v4.6 pairs its WIP upscaling path with a rejection latch that parks NR on the
-    // native path for the rest of the run. A build too old to know a key never reads
-    // it, so both writes are inert on older generations.
-    RenodxDefault("NeuralUplift", "1", "neural rendering on");
-    RenodxDefault("NREnableUpscaling", "0", "upscaling off; this feeder publishes a complete 1:1 DLAA contract");
-
-    // NRStyle is the add-on's own setting (v4.6+), changed from ITS overlay panel and applied at the
-    // next launch. On the reference machine (Metro 2033 Redux, Smooth Motion active),
-    // NRStyle=2 crashed the game 1-2 s into every boot with a null read on the present
-    // path -- landing in whichever module presented next (Luma once, the game's CRT with
-    // Luma removed), which made it look like anything BUT this setting. NRStyle=0 boots
-    // clean. Warn, do not rewrite: it is the user's explicit choice in the RenoDX panel,
-    // and the warning reaches both logs even when the game dies before any overlay.
-    if (g_renodx_v46)
-    {
-        char v[16];
-        size_t n = sizeof(v);
-        if (reshade::get_config_value(nullptr, "RenoDX.DLSS5", "NRStyle", v, &n) && atoi(v) == 2)
-            Warn("RenoDX.DLSS5 NRStyle=2 is set -- this crashed at startup on the reference machine "
-                 "(null read on the present path, blamed on whichever module presents next). If this "
-                 "game crashes on launch, set NRStyle=0 in ReShade.ini's [RenoDX.DLSS5] section.");
-    }
+#ifdef FEED_EMBEDDED
+    // ReShade may still be inside LoadLibrary while this merged entry point runs. Calling
+    // its config API here caused ERROR_DLL_INIT_FAILED in Skyrim before callbacks were
+    // registered. The first effect-runtime callback is the earliest reliable point.
+    g_renodx_config_pending = true;
+    Log("[feed] embedded startup: deferred RenoDX configuration until effect-runtime initialization");
+#else
+    ApplyRenodxConfiguration();
+#endif
 }
 // ---------------------------------------------------------------------------
 // Alex's Toolkit (alexs-toolkit.addon64) -- a third-party NGX interposer that sits
@@ -8209,6 +8226,25 @@ static void ResolveHandles(reshade::api::effect_runtime *rt)
 // Only the overlay page stays, so the checkbox can undo it.
 static void OnInitEffectRuntime(reshade::api::effect_runtime *rt)
 {
+#ifdef FEED_EMBEDDED
+    if (g_renodx_config_pending)
+    {
+        HMODULE reshade_module = reshade::internal::get_reshade_module_handle();
+        if (reshade_module != nullptr &&
+            GetProcAddress(reshade_module, "ReShadeGetConfigValue") != nullptr &&
+            GetProcAddress(reshade_module, "ReShadeSetConfigValue") != nullptr)
+        {
+            ApplyRenodxConfiguration();
+            g_renodx_config_pending = false;
+            Log("[feed] deferred RenoDX configuration applied after effect-runtime initialization");
+        }
+        else if (!g_renodx_config_api_warned)
+        {
+            g_renodx_config_api_warned = true;
+            Warn("ReShade configuration API is not ready at effect-runtime initialization; defaults remain pending");
+        }
+    }
+#endif
     if (FeedEnabled()) FeedVkFramePresentInstall(rt);
     if (!FeedEnabled()) return;
     RuntimeSlot *slot = TrackRuntime(rt);
@@ -8802,6 +8838,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             nullptr,
 #endif
             DrawOverlay);
+#ifdef FEED_EMBEDDED
+        Log("[feed] embedded startup callbacks registered; awaiting ReShade effect runtime");
+#endif
     }
     else if (reason == DLL_PROCESS_DETACH)
     {
