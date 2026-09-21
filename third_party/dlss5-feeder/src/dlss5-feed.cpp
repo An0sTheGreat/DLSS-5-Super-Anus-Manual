@@ -97,6 +97,9 @@ using RegisterEventForAddonFn = void (*)(void *, reshade::addon_event, void *);
 using UnregisterEventForAddonFn = void (*)(void *, reshade::addon_event, void *);
 using RegisterOverlayForAddonFn = void (*)(void *, const char *, void (*)(reshade::api::effect_runtime *));
 using UnregisterOverlayForAddonFn = void (*)(void *, const char *, void (*)(reshade::api::effect_runtime *));
+using GetConfigValueFn = bool (*)(void *, reshade::api::effect_runtime *, const char *, const char *, char *, size_t *);
+using SetConfigValueFn = void (*)(void *, reshade::api::effect_runtime *, const char *, const char *, const char *);
+using LogMessageFn = void (*)(void *, int, const char *);
 
 static HMODULE                     g_reshade_module;
 static char                        g_reshade_path[MAX_PATH];
@@ -104,6 +107,9 @@ static RegisterEventForAddonFn     g_register_event_for_addon;
 static UnregisterEventForAddonFn   g_unregister_event_for_addon;
 static RegisterOverlayForAddonFn   g_register_overlay_for_addon;
 static UnregisterOverlayForAddonFn g_unregister_overlay_for_addon;
+static GetConfigValueFn            g_get_config_value;
+static SetConfigValueFn            g_set_config_value;
+static LogMessageFn                g_log_message;
 
 static bool ResolveEmbeddedReShade()
 {
@@ -123,19 +129,19 @@ static bool ResolveEmbeddedReShade()
         GetProcAddress(g_reshade_module, "ReShadeRegisterOverlayForAddon"));
     g_unregister_overlay_for_addon = reinterpret_cast<UnregisterOverlayForAddonFn>(
         GetProcAddress(g_reshade_module, "ReShadeUnregisterOverlayForAddon"));
+    g_get_config_value = reinterpret_cast<GetConfigValueFn>(
+        GetProcAddress(g_reshade_module, "ReShadeGetConfigValue"));
+    g_set_config_value = reinterpret_cast<SetConfigValueFn>(
+        GetProcAddress(g_reshade_module, "ReShadeSetConfigValue"));
+    g_log_message = reinterpret_cast<LogMessageFn>(
+        GetProcAddress(g_reshade_module, "ReShadeLogMessage"));
     if (g_register_event_for_addon == nullptr || g_unregister_event_for_addon == nullptr ||
         g_register_overlay_for_addon == nullptr || g_unregister_overlay_for_addon == nullptr ||
-        GetProcAddress(g_reshade_module, "ReShadeGetConfigValue") == nullptr ||
-        GetProcAddress(g_reshade_module, "ReShadeSetConfigValue") == nullptr)
+        g_get_config_value == nullptr || g_set_config_value == nullptr || g_log_message == nullptr)
     {
         g_reshade_module = nullptr;
         return false;
     }
-
-    // Seed ReShade's header-local caches before any helper can perform its unreliable
-    // process-module scan from inside DllMain.
-    reshade::internal::get_current_module_handle(g_self);
-    reshade::internal::get_reshade_module_handle(g_reshade_module);
     return true;
 }
 #endif
@@ -179,6 +185,38 @@ static void UnregisterFeedOverlay(const char *title, void (*callback)(reshade::a
         g_unregister_overlay_for_addon(g_self, title, callback);
 #else
     reshade::unregister_overlay(title, callback);
+#endif
+}
+
+static bool FeedGetConfigValue(reshade::api::effect_runtime *runtime, const char *section, const char *key,
+                               char *value, size_t *value_size)
+{
+#ifdef FEED_EMBEDDED
+    return g_get_config_value != nullptr &&
+           g_get_config_value(g_self, runtime, section, key, value, value_size);
+#else
+    return reshade::get_config_value(runtime, section, key, value, value_size);
+#endif
+}
+
+static void FeedSetConfigValue(reshade::api::effect_runtime *runtime, const char *section, const char *key,
+                               const char *value)
+{
+#ifdef FEED_EMBEDDED
+    if (g_set_config_value != nullptr)
+        g_set_config_value(g_self, runtime, section, key, value);
+#else
+    reshade::set_config_value(runtime, section, key, value);
+#endif
+}
+
+static void FeedLogWarning(const char *message)
+{
+#ifdef FEED_EMBEDDED
+    if (g_log_message != nullptr)
+        g_log_message(g_self, static_cast<int>(reshade::log::level::warning), message);
+#else
+    reshade::log::message(reshade::log::level::warning, message);
 #endif
 }
 
@@ -226,7 +264,7 @@ static void Warn(const char *fmt, ...)
     Log("%s", line);
     char tagged[1100];
     _snprintf_s(tagged, sizeof(tagged), _TRUNCATE, "[DLSS 5 Feed] %s", line);
-    reshade::log::message(reshade::log::level::warning, tagged);
+    FeedLogWarning(tagged);
 }
 
 // The initial value has to read as "nothing has happened yet", not as a phase. It used to
@@ -413,9 +451,9 @@ static void RenodxDefault(const char *key, const char *value, const char *why)
 {
     char v[16];
     size_t n = sizeof(v);
-    if (!reshade::get_config_value(nullptr, "RenoDX.DLSS5", key, v, &n))
+    if (!FeedGetConfigValue(nullptr, "RenoDX.DLSS5", key, v, &n))
     {
-        reshade::set_config_value(nullptr, "RenoDX.DLSS5", key, value);
+        FeedSetConfigValue(nullptr, "RenoDX.DLSS5", key, value);
         Log("[feed] %s was unset; wrote %s=%s (%s)", key, key, value, why);
     }
     else
@@ -449,7 +487,7 @@ static void ApplyRenodxConfiguration()
     {
         char v[16];
         size_t n = sizeof(v);
-        if (reshade::get_config_value(nullptr, "RenoDX.DLSS5", "NRStyle", v, &n) && atoi(v) == 2)
+        if (FeedGetConfigValue(nullptr, "RenoDX.DLSS5", "NRStyle", v, &n) && atoi(v) == 2)
             Warn("RenoDX.DLSS5 NRStyle=2 is set -- this crashed at startup on the reference machine "
                  "(null read on the present path, blamed on whichever module presents next). If this "
                  "game crashes on launch, set NRStyle=0 in ReShade.ini's [RenoDX.DLSS5] section.");
@@ -8319,10 +8357,7 @@ static void OnInitEffectRuntime(reshade::api::effect_runtime *rt)
 #ifdef FEED_EMBEDDED
     if (g_renodx_config_pending)
     {
-        HMODULE reshade_module = reshade::internal::get_reshade_module_handle();
-        if (reshade_module != nullptr &&
-            GetProcAddress(reshade_module, "ReShadeGetConfigValue") != nullptr &&
-            GetProcAddress(reshade_module, "ReShadeSetConfigValue") != nullptr)
+        if (g_get_config_value != nullptr && g_set_config_value != nullptr)
         {
             ApplyRenodxConfiguration();
             g_renodx_config_pending = false;
@@ -8854,7 +8889,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         Log("dlss5-feed %s commit %s (built %s %s) attached.", FEED_VERSION, FEED_BUILD_ID, __DATE__, __TIME__);
 #ifdef FEED_EMBEDDED
         if (ResolveEmbeddedReShade())
-            Log("[feed] embedded ReShade module resolved and verified: %s (%p)", g_reshade_path, (void *)g_reshade_module);
+            Log("[feed] embedded ReShade module resolved and verified: %s (%p); events, overlay, config and log APIs use direct exports",
+                g_reshade_path, (void *)g_reshade_module);
         else
             Log("[feed] embedded ReShade module not resolved at %s; feeder callbacks will not be registered", g_reshade_path);
 #endif

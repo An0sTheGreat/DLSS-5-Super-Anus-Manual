@@ -250,6 +250,7 @@ def main() -> None:
     if args.integrated_feeder_preview:
         for marker in (b"managed_non_dlss", b"DLSS 5 Feed (Integrated)", b"dlss5-feed.cfg",
                        b"embedded ReShade module resolved and verified",
+                       b"config and log APIs use direct exports",
                        b"registered 9 callbacks and overlay explicitly for parent add-on",
                        b"deferred RenoDX configuration applied after effect-runtime initialization",
                        b"1.16.0-beta.6"):
