@@ -95,8 +95,6 @@ static bool             g_inert;
 #ifdef FEED_EMBEDDED
 using RegisterEventForAddonFn = void (*)(void *, reshade::addon_event, void *);
 using UnregisterEventForAddonFn = void (*)(void *, reshade::addon_event, void *);
-using RegisterOverlayForAddonFn = void (*)(void *, const char *, void (*)(reshade::api::effect_runtime *));
-using UnregisterOverlayForAddonFn = void (*)(void *, const char *, void (*)(reshade::api::effect_runtime *));
 using GetConfigValueFn = bool (*)(void *, reshade::api::effect_runtime *, const char *, const char *, char *, size_t *);
 using SetConfigValueFn = void (*)(void *, reshade::api::effect_runtime *, const char *, const char *, const char *);
 using LogMessageFn = void (*)(void *, int, const char *);
@@ -105,8 +103,6 @@ static HMODULE                     g_reshade_module;
 static char                        g_reshade_path[MAX_PATH];
 static RegisterEventForAddonFn     g_register_event_for_addon;
 static UnregisterEventForAddonFn   g_unregister_event_for_addon;
-static RegisterOverlayForAddonFn   g_register_overlay_for_addon;
-static UnregisterOverlayForAddonFn g_unregister_overlay_for_addon;
 static GetConfigValueFn            g_get_config_value;
 static SetConfigValueFn            g_set_config_value;
 static LogMessageFn                g_log_message;
@@ -125,10 +121,6 @@ static bool ResolveEmbeddedReShade()
         GetProcAddress(g_reshade_module, "ReShadeRegisterEventForAddon"));
     g_unregister_event_for_addon = reinterpret_cast<UnregisterEventForAddonFn>(
         GetProcAddress(g_reshade_module, "ReShadeUnregisterEventForAddon"));
-    g_register_overlay_for_addon = reinterpret_cast<RegisterOverlayForAddonFn>(
-        GetProcAddress(g_reshade_module, "ReShadeRegisterOverlayForAddon"));
-    g_unregister_overlay_for_addon = reinterpret_cast<UnregisterOverlayForAddonFn>(
-        GetProcAddress(g_reshade_module, "ReShadeUnregisterOverlayForAddon"));
     g_get_config_value = reinterpret_cast<GetConfigValueFn>(
         GetProcAddress(g_reshade_module, "ReShadeGetConfigValue"));
     g_set_config_value = reinterpret_cast<SetConfigValueFn>(
@@ -136,7 +128,6 @@ static bool ResolveEmbeddedReShade()
     g_log_message = reinterpret_cast<LogMessageFn>(
         GetProcAddress(g_reshade_module, "ReShadeLogMessage"));
     if (g_register_event_for_addon == nullptr || g_unregister_event_for_addon == nullptr ||
-        g_register_overlay_for_addon == nullptr || g_unregister_overlay_for_addon == nullptr ||
         g_get_config_value == nullptr || g_set_config_value == nullptr || g_log_message == nullptr)
     {
         g_reshade_module = nullptr;
@@ -165,26 +156,6 @@ static void UnregisterFeedEvent(typename reshade::addon_event_traits<ev>::decl c
         g_unregister_event_for_addon(g_self, ev, reinterpret_cast<void *>(callback));
 #else
     reshade::unregister_event<ev>(callback);
-#endif
-}
-
-static void RegisterFeedOverlay(const char *title, void (*callback)(reshade::api::effect_runtime *))
-{
-#ifdef FEED_EMBEDDED
-    if (g_register_overlay_for_addon != nullptr)
-        g_register_overlay_for_addon(g_self, title, callback);
-#else
-    reshade::register_overlay(title, callback);
-#endif
-}
-
-static void UnregisterFeedOverlay(const char *title, void (*callback)(reshade::api::effect_runtime *))
-{
-#ifdef FEED_EMBEDDED
-    if (g_unregister_overlay_for_addon != nullptr)
-        g_unregister_overlay_for_addon(g_self, title, callback);
-#else
-    reshade::unregister_overlay(title, callback);
 #endif
 }
 
@@ -8889,7 +8860,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         Log("dlss5-feed %s commit %s (built %s %s) attached.", FEED_VERSION, FEED_BUILD_ID, __DATE__, __TIME__);
 #ifdef FEED_EMBEDDED
         if (ResolveEmbeddedReShade())
-            Log("[feed] embedded ReShade module resolved and verified: %s (%p); events, overlay, config and log APIs use direct exports",
+            Log("[feed] embedded ReShade module resolved and verified: %s (%p); events, config and log APIs use direct exports; embedded feeder overlay disabled",
                 g_reshade_path, (void *)g_reshade_module);
         else
             Log("[feed] embedded ReShade module not resolved at %s; feeder callbacks will not be registered", g_reshade_path);
@@ -8971,15 +8942,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             RegisterFeedEvent<reshade::addon_event::reshade_render_technique>(OnRenderTechnique);
             RegisterFeedEvent<reshade::addon_event::reshade_present>(OnReShadePresent);
             RegisterFeedEvent<reshade::addon_event::destroy_device>(OnDestroyDevice);
-            RegisterFeedOverlay(
 #ifdef FEED_EMBEDDED
-                "DLSS 5 Feed (Integrated)",
+            Log("[feed] embedded startup: registered 9 callbacks explicitly for parent add-on; awaiting ReShade effect runtime");
 #else
-                nullptr,
-#endif
-                DrawOverlay);
-#ifdef FEED_EMBEDDED
-            Log("[feed] embedded startup: registered 9 callbacks and overlay explicitly for parent add-on; awaiting ReShade effect runtime");
+            reshade::register_overlay(nullptr, DrawOverlay);
 #endif
         }
     }
@@ -9001,13 +8967,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             DeleteCriticalSection(&g_log_cs);
             return TRUE;
         }
-        UnregisterFeedOverlay(
-#ifdef FEED_EMBEDDED
-            "DLSS 5 Feed (Integrated)",
-#else
-            nullptr,
+#ifndef FEED_EMBEDDED
+        reshade::unregister_overlay(nullptr, DrawOverlay);
 #endif
-            DrawOverlay);
         UnregisterFeedEvent<reshade::addon_event::create_device>(OnCreateDevice);
         UnregisterFeedEvent<reshade::addon_event::init_swapchain>(OnInitSwapchain);
         UnregisterFeedEvent<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);

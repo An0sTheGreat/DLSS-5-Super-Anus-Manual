@@ -248,13 +248,15 @@ def main() -> None:
     if neural_controls:
         assert b"NR DX11 NEURAL CONTROLS FIX 2:" in strings
     if args.integrated_feeder_preview:
-        for marker in (b"managed_non_dlss", b"DLSS 5 Feed (Integrated)", b"dlss5-feed.cfg",
+        for marker in (b"managed_non_dlss", b"dlss5-feed.cfg",
                        b"embedded ReShade module resolved and verified",
                        b"config and log APIs use direct exports",
-                       b"registered 9 callbacks and overlay explicitly for parent add-on",
+                       b"embedded feeder overlay disabled",
+                       b"registered 9 callbacks explicitly for parent add-on",
                        b"deferred RenoDX configuration applied after effect-runtime initialization",
                        b"1.16.0-beta.6"):
             assert marker in strings
+        assert b"DLSS 5 Feed (Integrated)" not in strings
     if args.experimental_dx11:
         assert args.version == "V6.6"
         for marker in (b"NR DX11 experimental", b"NVSDK_NGX_D3D11_CreateFeature",
