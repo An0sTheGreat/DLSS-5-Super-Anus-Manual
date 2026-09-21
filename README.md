@@ -1,10 +1,10 @@
 # DLSS 5 Super Anus
 
 An experimental 64-bit ReShade add-on that extends RenoDX DLSS with practical
-DLSS 5 Neural Rendering controls, cost scaling, presets, external DX11 Bridge
-compatibility, and PNG screenshot pairs.
+DLSS 5 Neural Rendering controls, cost scaling, presets, DX11 compatibility,
+and PNG screenshot pairs.
 
-The current standalone release is **v1.1.0.23**. Download the loose `.addon64`
+The current standalone release is **v1.1.1.30**. Download the loose `.addon64`
 file from the [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/releases)
 page for manual installation.
 
@@ -48,10 +48,12 @@ Future releases update both repositories. See
 - Saved presets and rebindable controls.
 - Automatic recovery when a game temporarily stops submitting a usable native
   DLSS input.
-- Full controls for DX11 games after the official external DLSS 5 Bridge
-  supplies a successful tracked D3D12 Neural Rendering evaluation.
+- Full controls for supported DX11 games without requiring the external
+  DLSS 5 Bridge.
 - Safe live DX11 multipass reduction by retaining same-generation working
   resources and valid host-owned native features while Neural Rendering remains active.
+- Adaptive working-cache growth from 512 MiB to 1 GiB only when DXGI confirms
+  sufficient safe VRAM headroom.
 - Experimental native Vulkan post-DLSS Neural Rendering at 100% and one pass.
 - F5 NR ON/OFF PNG pairs with SDR and HDR-aware capture modes.
 - Bounded resource caching, GPU-fence retirement, and guarded recreation.
@@ -61,11 +63,11 @@ Future releases update both repositories. See
 | Runtime | Status | Notes |
 | --- | --- | --- |
 | DirectX 12 | Supported | Primary path; requires a compatible native DLSS SR/NR setup. |
-| DirectX 11 | Experimental | Requires the latest official external DLSS 5 Bridge and usable native DLSS SR inputs. |
+| DirectX 11 | Experimental | Requires usable native DLSS inputs; the external DLSS 5 Bridge is not required. |
 | Vulkan | Experimental | Native post-DLSS path; currently limited to 100% resolution and one NR pass. Unsupported settings preserve native output. |
 | DirectX 9 / OpenGL | Not supported | No Neural Rendering backend is present. |
 
-OptiScaler is optional, not required. The DX11 Bridge is not bundled. Games
+OptiScaler and the external DX11 Bridge are optional, not required. Games
 without native DLSS inputs may need a separate DLSS feeder and motion-estimation
 solution; those tools are not bundled here.
 
@@ -75,14 +77,12 @@ solution; those tools are not bundled here.
 2. Install a 64-bit ReShade build with add-on support.
 3. Supply compatible copies of `nvngx_dlss.dll` and `nvngx_dlssnr.dll`; they are
    required and are not provided by this project.
-4. For DX11, install the latest official
-   [DLSS 5 Bridge](https://github.com/NIGos/dlss5-bridge/releases).
-5. Back up and remove any older or standalone version of this add-on.
-6. Extract `renodx-dlss5-super-anus.addon64` beside the game's ReShade DLL, or
+4. Back up and remove any older or standalone version of this add-on.
+5. Extract `renodx-dlss5-super-anus.addon64` beside the game's ReShade DLL, or
    into the add-on search directory configured by ReShade.
-7. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
+6. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
    build. If one replaced NVIDIA's DLL, restore the genuine DLL first.
-8. Launch the game and open the **RenoDX DLSS_A** tab.
+7. Launch the game and open the **RenoDX DLSS_A** tab.
 
 See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
 
@@ -121,7 +121,7 @@ All five keys can be rebound in the existing Controls section. See
 - HDR screenshots are SDR-rendered PNGs intended to resemble the displayed
   image, not lossless HDR masters.
 - Frame-generation observations in the tests do not certify generated frames.
-- KCD2/XeFG flicker investigation is outside this release's scope.
+- DX11 Present-hook motion-related flickering remains under investigation.
 
 ## Source and development
 

@@ -147,6 +147,27 @@ int main()
     g_scale_generation = 1;
     g_stream_generation = 1;
 
+    // A bridge can keep either identity stable while replacing the other.
+    // Registration must refresh the one record instead of leaving a stale
+    // native handle or allocating a duplicate wrapper entry.
+    auto *rebound = claim_command_list_locked(
+        reinterpret_cast<reshade::api::command_list *>(1),
+        reinterpret_cast<reshade::api::device *>(11), 101, 201);
+    assert(rebound);
+    assert(claim_command_list_locked(
+        reinterpret_cast<reshade::api::command_list *>(1),
+        reinterpret_cast<reshade::api::device *>(12), 102, 202) == rebound);
+    assert(!find_command_list_locked(reinterpret_cast<reshade::api::command_list *>(101)));
+    assert(find_command_list_locked(reinterpret_cast<reshade::api::command_list *>(102)) == rebound);
+    assert(claim_command_list_locked(
+        reinterpret_cast<reshade::api::command_list *>(2),
+        reinterpret_cast<reshade::api::device *>(13), 102, 202) == rebound);
+    assert(rebound->command_list == reinterpret_cast<reshade::api::command_list *>(2));
+    assert(rebound->device == reinterpret_cast<reshade::api::device *>(13));
+    assert(!find_command_list_locked(reinterpret_cast<reshade::api::command_list *>(1)));
+    assert(find_command_list_locked(reinterpret_cast<reshade::api::command_list *>(2)) == rebound);
+    g_tracked_command_lists = {};
+
     // Exercise the production registry with more live identities than slots.
     // Synthetic pointers are identities only: claim never dereferences them.
     for (unsigned i = 1; i <= 4096; ++i)
@@ -201,6 +222,37 @@ int main()
     assert(!g_multipass_groups.blocked(g_stream_generation.load()));
     g_resource_sets = {}; // Synthetic allocation: no GPU objects are owned.
     assert(configuration_epoch_ready_locked(2, 1001) && g_quiesce_generation == 0);
+
+    // The bridge cannot expose D3D12 completion for its internal command lists.
+    // Pass-count changes reuse compatible working sets; real allocation changes
+    // retain the superseded generation instead of permanently blocking controls.
+    g_runtime_api = static_cast<unsigned>(reshade::api::device_api::d3d11);
+    g_evaluation_device.observe(1, 1);
+    g_scale_generation = 1;
+    g_stream_generation = 1;
+    g_stream_signature = 0;
+    field<unsigned>(g_target_module, 0x266FA4) = 1;
+    observe_stream_configuration();
+    field<unsigned>(g_target_module, 0x266FA4) = 2;
+    observe_stream_configuration();
+    assert(g_scale_generation == 1 && g_quiesce_generation == 0);
+    field<unsigned>(g_target_module, 0x266FA4) = 1;
+    observe_stream_configuration();
+    assert(g_scale_generation == 1 && g_quiesce_generation == 0);
+    g_resource_sets[0].active = g_resource_sets[0].valid = true;
+    g_resource_sets[0].allocation_generation = 1;
+    g_resource_sets[0].allocated_bytes = nr::maximum_working_cache;
+    g_tracked_command_lists[0].active = true;
+    g_tracked_command_lists[0].references.sets = 1;
+    g_scale_generation = 2;
+    g_quiesce_generation = 2;
+    assert(configuration_epoch_ready_locked(2, 1002));
+    assert(g_quiesce_generation == 0 && g_resource_sets[0].active && g_resource_sets[0].unsafe_tracking);
+    g_resource_sets = {};
+    g_tracked_command_lists = {};
+    g_evaluation_device.forget(1);
+    g_runtime_api = 0;
+
     // Present and FrameGen-without-callback-context may have no advancing
     // native SR frame ID. Keep every configured pass in the first group native,
     // then release the transition on the first repeated pass.
@@ -303,7 +355,7 @@ int main()
     assert(!shared.additional_sources[0].source_color.handle && !shared.additional_sources[0].source_output.handle);
     g_resource_sets = {};
 
-    // A full working cache can still have reusable capacity: admission must
+    // A full conservative fallback cache can still have reusable capacity: admission must
     // collect completed fences before counting slots. Never count a busy or
     // merely signaled set as reusable. Allocation sizes are synthetic; fences
     // and the collector are real, and no game resources are touched.
@@ -313,7 +365,7 @@ int main()
         set.active = set.valid = set.retiring = true;
         set.device = reinterpret_cast<reshade::api::device *>(1);
         set.allocation_generation = 1;
-        set.allocated_bytes = nr::maximum_working_cache / 2;
+        set.allocated_bytes = nr::default_working_cache / 2;
         set.queue_mask = 1;
         set.retire_fences[0] = ++g_tracked_queues[0].serial;
     }
@@ -335,7 +387,7 @@ int main()
     assert(available() == 2 && g_cached_mib == 512);
     admission_block->Release();
     // Both passes now fit through reuse, even though another allocation cannot.
-    assert(!allocation_fits(nr::maximum_working_cache, 1, nr::maximum_working_cache));
+    assert(!allocation_fits(nr::default_working_cache, 1, nr::default_working_cache));
     g_resource_sets = {};
     puts("Prewarm capacity: full cache, unfinished fence rejection and completed-fence reuse passed.");
 

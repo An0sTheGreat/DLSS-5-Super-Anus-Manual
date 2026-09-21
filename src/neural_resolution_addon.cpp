@@ -253,6 +253,11 @@ std::atomic_uint g_runtime_api = 0;
 std::atomic<ULONGLONG> g_capture_off_until = 0;
 std::atomic_uint g_capture_skipped = 0;
 nr::backends::EvaluationDevice g_evaluation_device;
+bool bridge_backed_dx11()
+{
+    return static_cast<reshade::api::device_api>(g_runtime_api.load(std::memory_order_relaxed)) ==
+        reshade::api::device_api::d3d11 && g_evaluation_device.observed();
+}
 nr::FrameTrace g_frame_trace;
 std::atomic_bool g_trace_requested = false;
 std::atomic_uint g_trace_status = 0; // idle / recording / draining
@@ -508,11 +513,10 @@ void observe_stream_configuration()
     {
         if (!g_stream_signature.compare_exchange_weak(previous, signature, std::memory_order_acq_rel))
             continue;
-        // A larger group needs capacity that a full single-pass cache may be
-        // holding in flight. Drain it through the existing real-fence epoch
-        // barrier before attempting admission, rather than latching a false
-        // permanent fallback against the previous pass count's working sets.
-        if (passes > ((previous >> 8) & 0xFFFFu))
+        // Native DX12 drains a larger group's extra capacity through real
+        // fences. The DX11 bridge cannot expose that completion, so it reuses
+        // compatible working sets without starting an unfinishable drain.
+        if (passes > ((previous >> 8) & 0xFFFFu) && !bridge_backed_dx11())
             g_quiesce_generation.store(g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1,
                 std::memory_order_release);
         const unsigned generation = g_stream_generation.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1576,7 +1580,10 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
-#if defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
+#if defined(NR_DX11_NEURAL_CONTROLS_RELEASE)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 1.1.1: stable DX11 controls and adaptive multipass VRAM headroom.";
+#elif defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "V6.6 1.1.0: DX11 bridge controls and safe live multipass reduction.";
 #elif defined(NR_VRAM_WARNING_RELEASE)
@@ -1676,7 +1683,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-#if defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
+#if defined(NR_DX11_NEURAL_CONTROLS_RELEASE)
+            "NR BUILD ID: 1.1.1-dx11-neural-controls.1 module=%s config-schema=9.",
+#elif defined(NR_DX11_BRIDGE_RETENTION_RELEASE)
             "NR BUILD ID: 1.1.0-dx11-bridge-retention.2 module=%s config-schema=9.",
 #elif defined(NR_VRAM_WARNING_RELEASE) || defined(NR_VRAM_WARNING_PREVIEW)
             "NR BUILD ID: 1.0.9-vram-warning.2 module=%s config-schema=9.",
@@ -1845,6 +1854,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 #ifdef NR_DX11_GAME_TEST
         log_text(reshade::log::level::info,
             "NR INTEGRATED GAME TEST 2: DX12 preserved; DX11 SDK-executable interception, packed-depth conversion and guarded lifecycle enabled; Debug collapsed by default; Vulkan/DX9/OpenGL native backends unavailable. OptiScaler optional.");
+#endif
+#ifdef NR_DX11_NEURAL_CONTROLS_RELEASE
+        log_text(reshade::log::level::info,
+            "NR DX11 NEURAL CONTROLS FIX 2: stable bridge controls plus a 1 GiB cache ceiling only when DXGI confirms safe headroom; 512 MiB fallback retained.");
 #endif
         if (!g_overlay_event_registered)
             log_text(reshade::log::level::error,

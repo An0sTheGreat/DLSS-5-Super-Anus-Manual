@@ -928,9 +928,16 @@ bool configuration_epoch_ready_locked(unsigned generation, ULONGLONG now)
 {
     if (g_quiesce_generation.load(std::memory_order_acquire) != generation) return true;
     collect_resources_locked(now);
-    for (const auto &set : g_resource_sets)
+    const bool retain_bridge_generation = bridge_backed_dx11();
+    for (auto &set : g_resource_sets)
         if (set.active && !set.capture && set.allocation_generation != generation)
-            return false;
+        {
+            if (!retain_bridge_generation) return false;
+            // ponytail: DX11 bridge exposes no queue/reset completion; retain old
+            // generations until device teardown. Add bridge-owned fences if
+            // repeated allocation changes need earlier reclamation.
+            set.unsafe_tracking = true;
+        }
     unsigned expected = generation;
     if (g_quiesce_generation.compare_exchange_strong(expected, 0, std::memory_order_acq_rel))
         g_multipass_groups.reset();
@@ -2093,8 +2100,18 @@ TrackedCommandList *claim_command_list_locked(reshade::api::command_list *comman
     reshade::api::device *device, std::uint64_t native_command_list, std::uint64_t native_device)
 {
     for (auto &tracked : g_tracked_command_lists)
-        if (tracked.active && tracked.command_list == command_list)
+        if (tracked.active &&
+            (tracked.command_list == command_list ||
+             (native_command_list != 0 && native_device != 0 &&
+              tracked.native_command_list == native_command_list &&
+              tracked.native_device == native_device)))
+        {
+            tracked.command_list = command_list;
+            tracked.device = device;
+            tracked.native_command_list = native_command_list;
+            tracked.native_device = native_device;
             return &tracked;
+        }
     for (unsigned sweep = 0; sweep < 2; ++sweep)
         for (std::size_t n = 0; n < g_tracked_command_lists.size(); ++n)
         {

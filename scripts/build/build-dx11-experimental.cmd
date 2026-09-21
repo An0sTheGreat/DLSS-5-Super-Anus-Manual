@@ -167,6 +167,15 @@ if /i "%~1"=="manager-release-1.1.0" (
  set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
  if not exist "%ROOT%build\manager-1.1.0-addon" mkdir "%ROOT%build\manager-1.1.0-addon" || exit /b 1
 )
+if /i "%~1"=="manager-release-1.1.1" (
+ set "NR_OUTPUT=%ROOT%build\manager-1.1.1-addon\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE /DNR_VRAM_WARNING_RELEASE /DNR_DX11_BRIDGE_RETENTION_RELEASE /DNR_DX11_NEURAL_CONTROLS_RELEASE"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan --dx11-neural-controls-release --addon-version 1.1.1"
+ set "NR_PATCH_FLAGS=--addon-build 30 --addon-version 1.1.1 --release-version"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ if not exist "%ROOT%build\manager-1.1.1-addon" mkdir "%ROOT%build\manager-1.1.1-addon" || exit /b 1
+)
 if /i "%~1"=="vram-warning-preview" (
  set "NR_OUTPUT=%ROOT%build\v109-vram-warning-preview\renodx-dlss5-super-anus.addon64"
  set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE /DNR_VRAM_WARNING_PREVIEW"
@@ -222,6 +231,7 @@ if /i "%~1"=="manager-release-1.0.8" call "%ROOT%scripts\test\test-vulkan-export
 if /i "%~1"=="startup-history-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.0.9" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.1.0" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
+if /i "%~1"=="manager-release-1.1.1" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="vram-warning-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 copy /y "%ROOT%build\minhook-api\LICENSE.txt" "%ROOT%build\dx11-experimental-minhook-LICENSE.txt" >nul || exit /b 1
 endlocal

@@ -5,19 +5,21 @@
 namespace nr
 {
 constexpr std::uint64_t mib = 1024ull * 1024ull;
-constexpr std::uint64_t maximum_working_cache = 512ull * mib;
+constexpr std::uint64_t default_working_cache = 512ull * mib;
+constexpr std::uint64_t maximum_working_cache = 1024ull * mib;
 constexpr std::uint64_t maximum_minimum_headroom = 768ull * mib;
 
 struct MemoryAdmission
 {
-    std::uint64_t cache_limit = maximum_working_cache;
+    std::uint64_t cache_limit = default_working_cache;
     std::uint64_t reserved_headroom = 0;
     std::uint64_t available_headroom = 0;
     bool queried = false;
 };
 
 // DXGI's process usage includes the game, NGX, other mods and this add-on. Keep
-// a real reserve outside our cache and never let the cache exceed 512 MiB.
+// a real reserve outside our cache. Grow beyond the conservative 512 MiB
+// fallback only when DXGI confirms the adapter has enough safe headroom.
 inline MemoryAdmission adaptive_memory_admission(
     std::uint64_t cached_bytes,
     std::uint64_t current_usage,

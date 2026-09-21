@@ -73,10 +73,20 @@ int main()
     const auto pressured = nr::adaptive_memory_admission(192ull << 20, 15ull << 30, 16ull << 30, 4);
     assert(pressured.queried && pressured.cache_limit == (192ull << 20));
     const auto unavailable = nr::adaptive_memory_admission(0,0,0,2);
-    assert(!unavailable.queried && unavailable.cache_limit == nr::maximum_working_cache);
+    assert(!unavailable.queried && unavailable.cache_limit == nr::default_working_cache);
     const auto over_budget = nr::adaptive_memory_admission(256ull << 20,17ull << 30,16ull << 30,2);
     assert(over_budget.queried && over_budget.available_headroom == 0 &&
         over_budget.cache_limit == (256ull << 20));
+    // Skyrim can retain eight 3440x1440 bridge working sets. Admit the next
+    // 61 MiB set when DXGI reports ample headroom, while the no-query fallback
+    // remains at the conservative 512 MiB ceiling.
+    constexpr std::uint64_t skyrim_cached = 496128ull << 10;
+    constexpr std::uint64_t skyrim_request = 62016ull << 10;
+    const auto skyrim = nr::adaptive_memory_admission(
+        skyrim_cached, 3650ull << 20, 15209ull << 20, 2);
+    assert(skyrim.queried && skyrim.cache_limit == nr::maximum_working_cache);
+    assert(allocation_fits(skyrim_cached, skyrim_request, skyrim.cache_limit));
+    assert(!allocation_fits(skyrim_cached, skyrim_request, unavailable.cache_limit));
     nr::MultipassGroupPolicy groups;
     assert(!groups.use_native(1,100,0,3,false));
     assert(!groups.use_native(1,100,1,3,false));

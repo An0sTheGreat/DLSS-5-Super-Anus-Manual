@@ -2,6 +2,18 @@
 
 All notable public changes are documented here.
 
+## [1.1.1.30] - 2026-09-20
+
+- Restore live Neural Transfer, Neural Colour, and pass-count changes in
+  bridge-backed DX11 sessions without requiring a game restart.
+- Refresh reused private-DX12 command-list identities and retain compatible
+  working sets across DX11 pass-count transitions.
+- Allow the working cache to grow from 512 MiB to 1 GiB only when DXGI confirms
+  sufficient safe VRAM headroom; retain the original reserve and 512 MiB fallback.
+- Prevent false multipass VRAM failures such as Skyrim's 496 MiB cached plus
+  61 MiB request when the adapter still has substantial available headroom.
+- Remove the external DLSS 5 Bridge requirement from installation guidance.
+
 ## [1.1.0.23] - 2026-09-19
 
 - Enable Neural Resolution, detail, colour, edge, and per-pass controls for
