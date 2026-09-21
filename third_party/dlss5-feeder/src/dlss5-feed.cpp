@@ -92,6 +92,96 @@ static CRITICAL_SECTION g_log_cs;
 // registered and no session exists, so detach must not try to take any of that down.
 static bool             g_inert;
 
+#ifdef FEED_EMBEDDED
+using RegisterEventForAddonFn = void (*)(void *, reshade::addon_event, void *);
+using UnregisterEventForAddonFn = void (*)(void *, reshade::addon_event, void *);
+using RegisterOverlayForAddonFn = void (*)(void *, const char *, void (*)(reshade::api::effect_runtime *));
+using UnregisterOverlayForAddonFn = void (*)(void *, const char *, void (*)(reshade::api::effect_runtime *));
+
+static HMODULE                     g_reshade_module;
+static char                        g_reshade_path[MAX_PATH];
+static RegisterEventForAddonFn     g_register_event_for_addon;
+static UnregisterEventForAddonFn   g_unregister_event_for_addon;
+static RegisterOverlayForAddonFn   g_register_overlay_for_addon;
+static UnregisterOverlayForAddonFn g_unregister_overlay_for_addon;
+
+static bool ResolveEmbeddedReShade()
+{
+    GetModuleFileNameA(g_self, g_reshade_path, MAX_PATH);
+    char *slash = strrchr(g_reshade_path, '\\');
+    if (slash == nullptr) return false;
+    strcpy_s(slash + 1, MAX_PATH - (slash + 1 - g_reshade_path), "dxgi.dll");
+
+    g_reshade_module = GetModuleHandleA(g_reshade_path);
+    if (g_reshade_module == nullptr) return false;
+
+    g_register_event_for_addon = reinterpret_cast<RegisterEventForAddonFn>(
+        GetProcAddress(g_reshade_module, "ReShadeRegisterEventForAddon"));
+    g_unregister_event_for_addon = reinterpret_cast<UnregisterEventForAddonFn>(
+        GetProcAddress(g_reshade_module, "ReShadeUnregisterEventForAddon"));
+    g_register_overlay_for_addon = reinterpret_cast<RegisterOverlayForAddonFn>(
+        GetProcAddress(g_reshade_module, "ReShadeRegisterOverlayForAddon"));
+    g_unregister_overlay_for_addon = reinterpret_cast<UnregisterOverlayForAddonFn>(
+        GetProcAddress(g_reshade_module, "ReShadeUnregisterOverlayForAddon"));
+    if (g_register_event_for_addon == nullptr || g_unregister_event_for_addon == nullptr ||
+        g_register_overlay_for_addon == nullptr || g_unregister_overlay_for_addon == nullptr ||
+        GetProcAddress(g_reshade_module, "ReShadeGetConfigValue") == nullptr ||
+        GetProcAddress(g_reshade_module, "ReShadeSetConfigValue") == nullptr)
+    {
+        g_reshade_module = nullptr;
+        return false;
+    }
+
+    // Seed ReShade's header-local caches before any helper can perform its unreliable
+    // process-module scan from inside DllMain.
+    reshade::internal::get_current_module_handle(g_self);
+    reshade::internal::get_reshade_module_handle(g_reshade_module);
+    return true;
+}
+#endif
+
+template <reshade::addon_event ev>
+static void RegisterFeedEvent(typename reshade::addon_event_traits<ev>::decl callback)
+{
+#ifdef FEED_EMBEDDED
+    if (g_register_event_for_addon != nullptr)
+        g_register_event_for_addon(g_self, ev, reinterpret_cast<void *>(callback));
+#else
+    reshade::register_event<ev>(callback);
+#endif
+}
+
+template <reshade::addon_event ev>
+static void UnregisterFeedEvent(typename reshade::addon_event_traits<ev>::decl callback)
+{
+#ifdef FEED_EMBEDDED
+    if (g_unregister_event_for_addon != nullptr)
+        g_unregister_event_for_addon(g_self, ev, reinterpret_cast<void *>(callback));
+#else
+    reshade::unregister_event<ev>(callback);
+#endif
+}
+
+static void RegisterFeedOverlay(const char *title, void (*callback)(reshade::api::effect_runtime *))
+{
+#ifdef FEED_EMBEDDED
+    if (g_register_overlay_for_addon != nullptr)
+        g_register_overlay_for_addon(g_self, title, callback);
+#else
+    reshade::register_overlay(title, callback);
+#endif
+}
+
+static void UnregisterFeedOverlay(const char *title, void (*callback)(reshade::api::effect_runtime *))
+{
+#ifdef FEED_EMBEDDED
+    if (g_unregister_overlay_for_addon != nullptr)
+        g_unregister_overlay_for_addon(g_self, title, callback);
+#else
+    reshade::unregister_overlay(title, callback);
+#endif
+}
+
 static void Log(const char *fmt, ...)
 {
     char line[2048];
@@ -8762,6 +8852,12 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
         g_prev_filter = SetUnhandledExceptionFilter(&CrashFilter);
         Log("dlss5-feed %s commit %s (built %s %s) attached.", FEED_VERSION, FEED_BUILD_ID, __DATE__, __TIME__);
+#ifdef FEED_EMBEDDED
+        if (ResolveEmbeddedReShade())
+            Log("[feed] embedded ReShade module resolved and verified: %s (%p)", g_reshade_path, (void *)g_reshade_module);
+        else
+            Log("[feed] embedded ReShade module not resolved at %s; feeder callbacks will not be registered", g_reshade_path);
+#endif
         {
             char mopt[8] = {};
             g_ngx_matrix = GetEnvironmentVariableA("DLSS5_FEED_NGX_MATRIX", mopt, sizeof(mopt)) != 0 && mopt[0] == '1';
@@ -8821,26 +8917,35 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         // itself was loaded late.
         DetectSmoothMotion();
 
-        reshade::register_event<reshade::addon_event::create_device>(OnCreateDevice);
-        // The swapchain is the only thing that knows whether the frame is PQ; the format cannot say.
-        reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
-        reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
-        reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffectRuntime);
-        reshade::register_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffectRuntime);
-        reshade::register_event<reshade::addon_event::reshade_reloaded_effects>(OnReloadedEffects);
-        reshade::register_event<reshade::addon_event::reshade_render_technique>(OnRenderTechnique);
-        reshade::register_event<reshade::addon_event::reshade_present>(OnReShadePresent);
-        reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
-        reshade::register_overlay(
+        if (
 #ifdef FEED_EMBEDDED
-            "DLSS 5 Feed (Integrated)",
+            g_reshade_module != nullptr
 #else
-            nullptr,
+            true
 #endif
-            DrawOverlay);
+        )
+        {
+            RegisterFeedEvent<reshade::addon_event::create_device>(OnCreateDevice);
+            // The swapchain is the only thing that knows whether the frame is PQ; the format cannot say.
+            RegisterFeedEvent<reshade::addon_event::init_swapchain>(OnInitSwapchain);
+            RegisterFeedEvent<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+            RegisterFeedEvent<reshade::addon_event::init_effect_runtime>(OnInitEffectRuntime);
+            RegisterFeedEvent<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffectRuntime);
+            RegisterFeedEvent<reshade::addon_event::reshade_reloaded_effects>(OnReloadedEffects);
+            RegisterFeedEvent<reshade::addon_event::reshade_render_technique>(OnRenderTechnique);
+            RegisterFeedEvent<reshade::addon_event::reshade_present>(OnReShadePresent);
+            RegisterFeedEvent<reshade::addon_event::destroy_device>(OnDestroyDevice);
+            RegisterFeedOverlay(
 #ifdef FEED_EMBEDDED
-        Log("[feed] embedded startup callbacks registered; awaiting ReShade effect runtime");
+                "DLSS 5 Feed (Integrated)",
+#else
+                nullptr,
 #endif
+                DrawOverlay);
+#ifdef FEED_EMBEDDED
+            Log("[feed] embedded startup: registered 9 callbacks and overlay explicitly for parent add-on; awaiting ReShade effect runtime");
+#endif
+        }
     }
     else if (reason == DLL_PROCESS_DETACH)
     {
@@ -8860,22 +8965,22 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             DeleteCriticalSection(&g_log_cs);
             return TRUE;
         }
-        reshade::unregister_overlay(
+        UnregisterFeedOverlay(
 #ifdef FEED_EMBEDDED
             "DLSS 5 Feed (Integrated)",
 #else
             nullptr,
 #endif
             DrawOverlay);
-        reshade::unregister_event<reshade::addon_event::create_device>(OnCreateDevice);
-        reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
-        reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
-        reshade::unregister_event<reshade::addon_event::init_effect_runtime>(OnInitEffectRuntime);
-        reshade::unregister_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffectRuntime);
-        reshade::unregister_event<reshade::addon_event::reshade_reloaded_effects>(OnReloadedEffects);
-        reshade::unregister_event<reshade::addon_event::reshade_render_technique>(OnRenderTechnique);
-        reshade::unregister_event<reshade::addon_event::reshade_present>(OnReShadePresent);
-        reshade::unregister_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
+        UnregisterFeedEvent<reshade::addon_event::create_device>(OnCreateDevice);
+        UnregisterFeedEvent<reshade::addon_event::init_swapchain>(OnInitSwapchain);
+        UnregisterFeedEvent<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+        UnregisterFeedEvent<reshade::addon_event::init_effect_runtime>(OnInitEffectRuntime);
+        UnregisterFeedEvent<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffectRuntime);
+        UnregisterFeedEvent<reshade::addon_event::reshade_reloaded_effects>(OnReloadedEffects);
+        UnregisterFeedEvent<reshade::addon_event::reshade_render_technique>(OnRenderTechnique);
+        UnregisterFeedEvent<reshade::addon_event::reshade_present>(OnReShadePresent);
+        UnregisterFeedEvent<reshade::addon_event::destroy_device>(OnDestroyDevice);
         FeedVkFramePresentRemove();
         FeedVkHookRemove();   // before this code is unmapped -- ReShade reloads add-ons per Vulkan instance
         g_ngx_dying = true;   // process is exiting: never call back into NGX

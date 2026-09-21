@@ -249,7 +249,8 @@ def main() -> None:
         assert b"NR DX11 NEURAL CONTROLS FIX 2:" in strings
     if args.integrated_feeder_preview:
         for marker in (b"managed_non_dlss", b"DLSS 5 Feed (Integrated)", b"dlss5-feed.cfg",
-                       b"embedded startup callbacks registered",
+                       b"embedded ReShade module resolved and verified",
+                       b"registered 9 callbacks and overlay explicitly for parent add-on",
                        b"deferred RenoDX configuration applied after effect-runtime initialization",
                        b"1.16.0-beta.6"):
             assert marker in strings
