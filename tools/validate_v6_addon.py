@@ -63,6 +63,7 @@ def main() -> None:
     parser.add_argument("--vram-warning-release", action="store_true")
     parser.add_argument("--dx11-bridge-retention-release", action="store_true")
     parser.add_argument("--dx11-neural-controls-release", action="store_true")
+    parser.add_argument("--integrated-feeder-preview", action="store_true")
     parser.add_argument("--addon-version", default="1.0.3")
     args = parser.parse_args()
 
@@ -70,19 +71,20 @@ def main() -> None:
     assert hashlib.sha256(base_bytes).hexdigest() == EXPECTED_SHA256
     base = PeImage(bytearray(base_bytes))
     addon = PeImage(bytearray(args.addon.read_bytes()))
+    neural_controls = args.dx11_neural_controls_release or args.integrated_feeder_preview
     pass_controls = (args.pass_controls_preview or args.pass_controls_release or
                      args.motion_runtime_release or args.slider_reset_release or
                      args.multipass_edge_release or args.startup_history_preview or
                      args.startup_history_release or args.vram_warning_preview or
                      args.vram_warning_release or args.dx11_bridge_retention_release or
-                     args.dx11_neural_controls_release)
+                     neural_controls)
     if args.integrated_release or pass_controls:
         assert not args.framegen_input_trace and args.experimental_dx11 and args.experimental_vulkan
         history_fix = b"NR BUILD ID: 1.0.3-pass-controls.10-history.1 module=" in addon.data
-        build_id = b"1.1.1-dx11-neural-controls.1" if args.dx11_neural_controls_release else b"1.1.0-dx11-bridge-retention.2" if args.dx11_bridge_retention_release else b"1.0.9-vram-warning.2" if args.vram_warning_preview or args.vram_warning_release else b"1.0.9-startup-history.1" if args.startup_history_release else b"1.0.8-startup-history.1" if args.startup_history_preview else b"1.0.8-multipass-edge.1" if args.multipass_edge_release else b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
+        build_id = b"1.1.1-dx11-neural-controls.1" if neural_controls else b"1.1.0-dx11-bridge-retention.2" if args.dx11_bridge_retention_release else b"1.0.9-vram-warning.2" if args.vram_warning_preview or args.vram_warning_release else b"1.0.9-startup-history.1" if args.startup_history_release else b"1.0.8-startup-history.1" if args.startup_history_preview else b"1.0.8-multipass-edge.1" if args.multipass_edge_release else b"1.0.6-slider-reset.1" if args.slider_reset_release else b"1.0.5-motion-runtime.1" if args.motion_runtime_release else b"1.0.3-manager-release.3" if args.pass_controls_release else (b"1.0.3-pass-controls.10-history.1" if history_fix else b"1.0.3-pass-controls.9") if args.pass_controls_preview else b"1.0.3-framegen-upstream.4"
         assert b"NR BUILD ID: " + build_id in addon.data
         assert b"NR nested-source guard disabled:" in addon.data
-        if args.startup_history_preview or args.startup_history_release or args.vram_warning_preview or args.vram_warning_release or args.dx11_bridge_retention_release or args.dx11_neural_controls_release:
+        if args.startup_history_preview or args.startup_history_release or args.vram_warning_preview or args.vram_warning_release or args.dx11_bridge_retention_release or neural_controls:
             for marker in (b"Neural Rendering Enabled On Launch",
                            b"MULTI-PASS FAILURE DUE TO VRAM CONSUMPTION",
                            b"Multipass Edge Protection Enabled",
@@ -111,7 +113,7 @@ def main() -> None:
         rva, size = addon.directory(2)
         assert new_start <= rva and rva + size <= new_end
         diagnostic = b"NR BUILD ID: 1.0.3-pass-controls.9-input-trace.1 module=" in addon.data
-        expected_build = 30 if args.dx11_neural_controls_release else 23 if args.dx11_bridge_retention_release else 21 if args.vram_warning_preview or args.vram_warning_release else 19 if args.startup_history_preview or args.startup_history_release else 18 if args.multipass_edge_release else 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
+        expected_build = 30 if neural_controls else 23 if args.dx11_bridge_retention_release else 21 if args.vram_warning_preview or args.vram_warning_release else 19 if args.startup_history_preview or args.startup_history_release else 18 if args.multipass_edge_release else 17 if args.slider_reset_release else 16 if args.motion_runtime_release else 12 if args.pass_controls_release else 11 if history_fix else 10 if diagnostic else 9
         validate_version(base, addon, args.addon, expected_build,
             release=args.pass_controls_release or args.motion_runtime_release or args.slider_reset_release or args.multipass_edge_release or args.startup_history_release or args.vram_warning_release or args.dx11_bridge_retention_release or args.dx11_neural_controls_release,
             version=args.addon_version)
@@ -211,6 +213,12 @@ def main() -> None:
         if args.experimental_vulkan:
             allowed_new.add("BCRYPT.DLL")
             assert {"BCryptOpenAlgorithmProvider", "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash"} <= imports["BCRYPT.DLL"]
+        if args.integrated_feeder_preview:
+            allowed_new |= {"API-MS-WIN-CRT-CONVERT-L1-1-0.DLL", "API-MS-WIN-CRT-ENVIRONMENT-L1-1-0.DLL",
+                            "API-MS-WIN-CRT-HEAP-L1-1-0.DLL", "API-MS-WIN-CRT-RUNTIME-L1-1-0.DLL",
+                            "API-MS-WIN-CRT-STRING-L1-1-0.DLL", "API-MS-WIN-CRT-TIME-L1-1-0.DLL",
+                            "MSVCP140.DLL", "VCRUNTIME140.DLL", "VCRUNTIME140_1.DLL", "VERSION.DLL"}
+            assert {"_CxxThrowException", "memcpy", "memmove"} <= imports["VCRUNTIME140.DLL"]
         assert set(imports) - set(base_imports) <= allowed_new
 
     exception_rva, exception_size = addon.directory(3)
@@ -237,8 +245,12 @@ def main() -> None:
             forbidden_markers.append(b"NVSDK_NGX_VULKAN_Init_Ext2")
         for forbidden in forbidden_markers:
             assert forbidden not in strings
-    if args.dx11_neural_controls_release:
+    if neural_controls:
         assert b"NR DX11 NEURAL CONTROLS FIX 2:" in strings
+    if args.integrated_feeder_preview:
+        for marker in (b"managed_non_dlss", b"DLSS 5 Feed (Integrated)", b"dlss5-feed.cfg",
+                       b"1.16.0-beta.6"):
+            assert marker in strings
     if args.experimental_dx11:
         assert args.version == "V6.6"
         for marker in (b"NR DX11 experimental", b"NVSDK_NGX_D3D11_CreateFeature",

@@ -77,7 +77,6 @@ extern "C" int memcmp(const void *left, const void *right, std::size_t count)
         if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
     return 0;
 }
-extern "C" int _fltused = 0;
 extern "C" void *memcpy(void *destination, const void *source, std::size_t count)
 {
     auto *out = static_cast<unsigned char *>(destination);
@@ -101,6 +100,7 @@ extern "C" void *memset(void *destination, int value, std::size_t count)
     while (count-- != 0) *out++ = static_cast<unsigned char>(value);
     return destination;
 }
+extern "C" int _fltused = 0;
 #endif
 
 namespace

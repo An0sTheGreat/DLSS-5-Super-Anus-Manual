@@ -1,0 +1,224 @@
+// dlss5-feed IPC: the 32-bit in-game add-on <-> 64-bit host protocol.
+//
+// Everything heavy stays on the GPU. WHICH SIDE CREATES the four shared textures
+// depends on the game's API, and the driver decides, not us:
+//
+//  * D3D11 client (client_kind = FEED_CLIENT_D3D11, protocol v1's only case): the
+//    game creates them on D3D11 -- the direction the driver accepts, see the
+//    phase-0 spike -- and sends its local NT-handle values; the host duplicates
+//    them out of the game process and opens them on D3D12.
+//  * OpenGL client (client_kind = FEED_CLIENT_GL) and Vulkan client
+//    (FEED_CLIENT_VULKAN): the HOST creates them on D3D12 and duplicates the
+//    handles INTO the game, which imports them as GL textures / VkImages. For GL
+//    the direction is forced -- GL memory objects are import-only, so a GL process
+//    cannot export one (PLAN-OPENGL §5, design A). For Vulkan it is forced the
+//    other way round: D3D12 cannot open Vulkan-exported memory. Either way it is
+//    the better direction, since the resource is then born with exactly the D3D12
+//    flags NGX wants.
+//
+// Either way the host creates the two shared fences on D3D12 and duplicates them
+// INTO the game process. The pipe carries only these fixed-size structs.
+//
+// Sync per frame n: the host always waits in_fence >= n, evaluates, Signal(out_fence, n).
+// The game has two shapes for its half, chosen by its async_home setting:
+//
+//  * same frame (async_home=0): copy inputs, Signal(in_fence, n), send FeedFrameMsg,
+//    record Wait(out_fence, n) + blit. The frame cannot be presented until the host
+//    has finished it, so the game's frame time carries the whole round trip.
+//  * pipelined (async_home=1, the default): record Wait(out_fence, m) for the frame m
+//    sent previously, copy inputs, blit the output the host produced for m, THEN
+//    Signal(in_fence, n) and send FeedFrameMsg. The blit reads Output before the
+//    signal that lets the host overwrite it, so one shared Output slot stays
+//    race-free; the cost is that the DLSS result is one frame old.
+//
+// Either way it is the same protocol -- the host cannot tell, and does not care.
+// A pipe break on either side means "stop feeding".
+//
+// Version 2 added client_kind and the host-created texture handles. Version 3 added
+// FEED_CLIENT_VULKAN and FeedBuildAck::output_fmt -- when the host creates the
+// textures it also OWNS the output-format choice (the typed-UAV-store fallback needs
+// a D3D12 device to ask), and the game must know the real format to import the
+// VkImage and to decide copy-vs-blit for the way home. Version 4 added
+// FeedHello::self_process so the host no longer OpenProcess()es the game, which a
+// protective DACL on the game process denies (error 5 -- the vanilla-WoW report).
+// Version 5 added FeedBuild::client_flags: a D3D11 client whose device refuses the
+// shared textures (a feature-level 10.x game, NFS Most Wanted 2012 / issue #33: it
+// cannot bind a UAV, and the DLSS output needs one) asks the host to create the set
+// instead, exactly as GL/Vulkan clients always have, and to keep the UAV on its own
+// side (the host evaluates into a private scratch and copies into the shared Output).
+// Version 6 added FeedBuild::target_width/height and FeedFrameMsg::jitter_x/y for
+// work_upscale=2 (issue #34): the game asks for a DLSS Super Resolution feature whose
+// output is the native size while the guides stay at the work size, and reports the
+// sub-pixel shift it applied to the downsample grid on every frame. The host answers
+// with FeedBuildAck::flags -- FEED_ACK_SR_UNAVAILABLE when no DLSS quality preset covers
+// the ratio, so the game rebuilds as plain DLAA -- and the preset it picked.
+// Version 7 added the panel texture: a shared copy of the host's own presented frame (its
+// ReShade overlay = the neural consumer's tuning panel), so the game can draw that panel
+// itself where the desktop compositor cannot (exclusive fullscreen). FeedHelloAck::panel_*
+// says how big the host's frame is; a D3D11 client creates a texture of that size on its
+// own device -- the direction this driver accepts, a D3D12-created one comes back
+// E_INVALIDARG from OpenSharedResource1 -- and sends its handle in FeedBuild::panel_tex.
+// GL and Vulkan clients cannot export a texture the host could open, so for them the host
+// creates the panel and hands it over in FeedBuildAck::panel_tex, like their four slots.
+// The host copies its back buffer into it after every Present; the game samples it,
+// unfenced, as a UI layer.
+//
+// Both sides refuse a version they do not understand rather than misparsing it: the
+// struct sizes differ between versions, so a mismatched pair would desync the pipe.
+
+#pragma once
+#include <cstdint>
+
+#define FEED_IPC_MAGIC   0x35534C44u  // 'DLS5'
+#define FEED_IPC_VERSION 10u
+
+// Version 10 added the tag 'C' with a FeedCastMsg payload: "the cast panel is now shown at
+// this rectangle in the game, at this scale" (and again with shown=0 when it goes away).
+// The host is otherwise the last to know it is on screen: the cast draws the host's own
+// window into the game, and the input the game forwards arrives as ordinary posted WM_*
+// messages that say nothing about where they came from. A neural consumer that draws its
+// own UI in that window -- OptiScaler's menu is its own window, not a ReShade page -- had
+// to tail dlss5-feed.log to find out (issue #118). The host now logs it and republishes it
+// as a registered window message, so a consumer in the host process can see it directly.
+
+// Version 9 added the tag 'O', with no payload: "open ReShade's overlay in your own window".
+// The host does that for itself once at startup, and until v9 nothing could ask it again, so
+// closing that overlay left the consumer's panel unreachable for the rest of the session. It
+// has to be the HOST that posts the key: ReShade reads a key whose down and up land in one
+// frame as never pressed, and the cast forwards both edges of a keypress in the same frame,
+// so pressing the overlay key through the cast does nothing. The host spreads the two edges
+// across its own frames, which is the one thing the game cannot do for it.
+
+// FeedBuild::client_flags (v5+)
+#define FEED_BUILD_HOST_CREATES  1u   // tex[] are zero: the host creates the shared set and answers with handles
+#define FEED_BUILD_OUTPUT_NO_UAV 2u   // the game's device cannot bind UAVs: share the Output without one
+#define FEED_BUILD_ASYNC_HOME    4u   // the client copies home the PREVIOUS frame's result, so it is never
+                                      // blocked on the evaluate the host is running now. Tells the host it
+                                      // may spend a little of its OWN time getting a present slot rather
+                                      // than dropping the present (issue #15). An unset bit is the old
+                                      // behaviour on both sides, so this needs no FEED_IPC_VERSION bump.
+
+// FeedBuildAck::flags (v6+)
+#define FEED_ACK_SR_ACTIVE       1u   // the feature is DLSS Super Resolution work -> target (sr_quality says which preset)
+#define FEED_ACK_SR_UNAVAILABLE  2u   // SR was asked for, no preset covers the ratio: the build failed on purpose,
+                                      // rebuild with target == work (DLAA)
+#define FEED_PIPE_FMT    "\\\\.\\pipe\\dlss5-feed.%lu"   // %lu = game PID
+
+// The bytes a version-1 client sends as its hello: magic, version, pid.
+#define FEED_HELLO_V1_SIZE (3u * sizeof(uint32_t))
+
+enum FeedSlot { FEED_COLOR = 0, FEED_OUTPUT, FEED_DEPTH, FEED_MV, FEED_SLOTS };
+
+// For logs on both sides of the pipe: "tex 1" told a reporter nothing, and issue #43 turned
+// on knowing that slot 1 is the DLSS output.
+static inline const char *FeedSlotName(int slot)
+{
+    switch (slot)
+    {
+    case FEED_COLOR:  return "Color";
+    case FEED_OUTPUT: return "Output";
+    case FEED_DEPTH:  return "Depth";
+    case FEED_MV:     return "MV";
+    default:          return "?";
+    }
+}
+
+enum FeedClientKind { FEED_CLIENT_D3D11 = 0, FEED_CLIENT_GL = 1, FEED_CLIENT_VULKAN = 2 };
+
+// True for every client whose API cannot hand D3D12 an importable texture, so the
+// host creates the shared set and duplicates the handles in.
+static inline bool FeedHostCreatesTextures(uint32_t client_kind)
+{
+    return client_kind == FEED_CLIENT_GL || client_kind == FEED_CLIENT_VULKAN;
+}
+
+#pragma pack(push, 1)
+
+struct FeedHello        // game -> host, once
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t pid;
+    uint32_t client_kind;   // v2+: FeedClientKind. Absent (and 0) from a v1 client.
+    uint64_t self_process;  // v4+: a handle to the game process, valid IN THE HOST -- the game
+                            // duplicates it in via the process handle CreateProcess gave it.
+                            // The host used to OpenProcess(pid), which a protective DACL on the
+                            // game process denies (error 5: anti-cheat/DRM, elevation mismatch);
+                            // handing the handle over needs no access to the game's DACL at all.
+                            // 0 = the duplication failed; the host falls back to OpenProcess.
+};
+
+struct FeedHelloAck     // host -> game, once
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t panel_width, panel_height;   // v7+: the host's frame size (R8G8B8A8_UNORM), for the panel
+                                          // texture a D3D11 client creates; 0 = the host has no panel
+};
+
+struct FeedBuild        // game -> host, on every resolution/format change
+{
+    uint32_t width, height;
+    uint32_t color_fmt;          // DXGI_FORMAT of the shared Color/Output pair
+    uint32_t output_fmt;
+    int32_t  hdr;                // resolved flags, not cfg values
+    int32_t  depth_inverted;
+    int32_t  flags_override;     // -1 = none
+    int32_t  transport;          // 1 = no NGX: host copies Color -> Output (cross-process transport test)
+    float    mv_scale_x, mv_scale_y;
+    uint64_t tex[FEED_SLOTS];    // D3D11 clients: NT-handle VALUES in the game process (host
+                                 // duplicates them out). GL/Vulkan clients: all zero -- the host
+                                 // creates, and answers with its own handles.
+    uint32_t client_flags;       // v5+: FEED_BUILD_* -- a D3D11 client can opt into host-created textures
+    uint32_t target_width, target_height;   // v6+: 0 = DLAA (target == width/height). Otherwise the Output
+                                            // slot is THIS size and the feature is DLSS Super Resolution
+                                            // (work_upscale=2); Color/Depth/MV stay at width/height.
+    uint64_t panel_tex;          // v7+: D3D11 clients: NT-handle VALUE (game process) of the panel texture the
+                                 // game created at FeedHelloAck::panel_* size; 0 = none. The host opens it and
+                                 // copies its presented frame into it after every Present.
+};
+
+struct FeedBuildAck     // host -> game
+{
+    int32_t  ok;                 // 1 = feature ready
+    uint32_t ngx_result;         // NVSDK_NGX_Result of the create (0x1 = success)
+    uint64_t fence_in;           // handle values valid in the GAME process (host duplicated them in)
+    uint64_t fence_out;
+    uint64_t tex[FEED_SLOTS];    // host-creating clients only: handle values valid in the GAME process
+    uint64_t tex_size[FEED_SLOTS]; // host-creating clients only: GetResourceAllocationInfo sizes, which
+                                   // the GL import needs and a client with no D3D12 device cannot ask for
+    uint32_t output_fmt;         // the DXGI_FORMAT the host actually created the Output slot with.
+                                 // For a host-creating client this can differ from the requested
+                                 // FeedBuild::output_fmt: only the host's device can answer whether
+                                 // a typed UAV store to B8G8R8A8 is supported, and where it is not
+                                 // the output falls back to R8G8B8A8. Echoed for D3D11 clients too.
+    uint32_t flags;              // v6+: FEED_ACK_*
+    uint32_t sr_quality;         // v6+: NVSDK_NGX_PerfQuality_Value of an SR feature (FEED_ACK_SR_ACTIVE)
+    uint64_t panel_tex;          // v7+: host-creating clients (GL / Vulkan) only: handle value valid in the GAME
+                                 // process of the HOST-created panel texture (they cannot export one for the
+                                 // host to open); 0 = none. RGBA8, FeedHelloAck::panel_* in size.
+    uint64_t panel_size;         // v7+: its GetResourceAllocationInfo size, for the GL import
+};
+
+struct FeedWindowMsg    // game -> host ('W'), v8+: resize the host window, live
+{
+    uint32_t width, height;   // client-area pixels; height 0 = auto (fill the work area)
+};
+
+struct FeedCastMsg      // game -> host ('C'), v10+: the cast panel's state, on every change
+{
+    uint32_t shown;            // 1 = on screen in the game; 0 = hidden (the rect is then stale)
+    int32_t  left, top, right, bottom;   // where it is drawn, in the GAME window's client pixels
+    float    scale;            // host client pixels -> game pixels; divide by it to map back
+    uint32_t anchor;           // cast_anchor: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right
+};
+
+struct FeedFrameMsg     // game -> host, per frame
+{
+    uint64_t n;                  // fence value for this frame
+    uint32_t reset;              // 1 = reset temporal history
+    float    jitter_x, jitter_y; // v6+: the sub-pixel shift applied to this frame's downsample grid, in
+                                 // work pixels; 0 under DLAA. Handed to DLSS as the jitter offset.
+};
+
+#pragma pack(pop)

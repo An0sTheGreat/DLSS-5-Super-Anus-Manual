@@ -12,6 +12,7 @@ EXTERN DllMain:PROC
 EXTERN auto_native_source:PROC
 
 PUBLIC combined_entry
+PUBLIC feeder_entry_rva
 PUBLIC settings_top_bridge
 PUBLIC settings_bridge
 PUBLIC native_slider_reset_bridge
@@ -93,9 +94,26 @@ combined_entry PROC
     mov edx, esi
     mov r8, rdi
     call DllMain
+    mov eax, dword ptr [feeder_entry_rva]
+    test eax, eax
+    jz entry_done
+    add rax, rbx
+    mov rcx, rbx
+    mov edx, esi
+    mov r8, rdi
+    call rax
     jmp entry_done
 
 detach_path:
+    mov eax, dword ptr [feeder_entry_rva]
+    test eax, eax
+    jz detach_custom
+    add rax, rbx
+    mov rcx, rbx
+    mov edx, esi
+    mov r8, rdi
+    call rax
+detach_custom:
     mov rcx, rbx
     mov edx, esi
     mov r8, rdi
@@ -305,6 +323,8 @@ destroy_resource_bridge PROC
 destroy_resource_bridge ENDP
 
 .data
+ALIGN 4
+feeder_entry_rva dd 0
 ALIGN 8
 module_base dq 0180000000h
 

@@ -7,6 +7,8 @@ set "NR_VALIDATION_FLAGS="
 set "NR_PATCH_FLAGS="
 set "NR_TEST_DEFINE="
 set "NR_VULKAN_INCLUDE="
+set "NR_FEEDER_BUILD="
+set "NR_FEEDER_PATCH="
 if /i "%~1"=="game-test" (
  set "NR_OUTPUT=%ROOT%build\dx11-integrated-game-test.addon64"
  set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST"
@@ -176,6 +178,17 @@ if /i "%~1"=="manager-release-1.1.1" (
  set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
  if not exist "%ROOT%build\manager-1.1.1-addon" mkdir "%ROOT%build\manager-1.1.1-addon" || exit /b 1
 )
+if /i "%~1"=="integrated-feeder-preview" (
+ set "NR_OUTPUT=%ROOT%..\..\artifacts\integrated-feeder-preview\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE /DNR_VRAM_WARNING_RELEASE /DNR_DX11_BRIDGE_RETENTION_RELEASE /DNR_DX11_NEURAL_CONTROLS_RELEASE"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan --integrated-feeder-preview --addon-version 1.1.1"
+ set "NR_PATCH_FLAGS=--addon-build 30 --addon-version 1.1.1"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ set "NR_FEEDER_BUILD=1"
+ set NR_FEEDER_PATCH=--feeder-embedded "%ROOT%build\dlss5_feed_embedded.dll"
+ if not exist "%ROOT%..\..\artifacts\integrated-feeder-preview" mkdir "%ROOT%..\..\artifacts\integrated-feeder-preview" || exit /b 1
+)
 if /i "%~1"=="vram-warning-preview" (
  set "NR_OUTPUT=%ROOT%build\v109-vram-warning-preview\renodx-dlss5-super-anus.addon64"
  set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN /DNR_NESTED_SOURCE_GUARD /DNR_MULTIPASS_EDGE_RELEASE /DNR_STARTUP_HISTORY_RELEASE /DNR_VRAM_WARNING_PREVIEW"
@@ -212,9 +225,17 @@ cl /nologo /std:c++20 /MD /EHsc /O2 /W4 /WX %NR_TEST_DEFINE% ^
 link /nologo /dll /nodefaultlib /entry:combined_entry /dynamicbase /incremental:no /Brepro /opt:ref /opt:icf ^
  /map:"%ROOT%build\neural_resolution_dx11.map" /out:"%ROOT%build\neural_resolution_dx11_embedded.dll" ^
  "%ROOT%build\neural_resolution_dx11.obj" "%ROOT%build\embedded_bridges_dx11.obj" "%ROOT%build\hook.obj" "%ROOT%build\buffer.obj" "%ROOT%build\trampoline.obj" "%ROOT%build\hde64.obj" kernel32.lib Psapi.lib User32.lib ucrt.lib ole32.lib windowscodecs.lib uuid.lib bcrypt.lib || exit /b 1
+if defined NR_FEEDER_BUILD (
+ if not exist "%ROOT%build\feeder-obj" mkdir "%ROOT%build\feeder-obj" || exit /b 1
+ cl /nologo /LD /EHsc /O2 /MD /W3 /std:c++20 /GS- /guard:cf- /Brepro /DFEED_EMBEDDED ^
+  /I "%ROOT%third_party\dlss5-feeder\external\reshade\include" /I "%ROOT%build\dlss-sdk-api\include" %NR_VULKAN_INCLUDE% /I "%ROOT%third_party\dlss5-feeder\external\imgui" /I "%ROOT%build\minhook-api\include" ^
+  /Fo"%ROOT%build\feeder-obj\\" /Fe"%ROOT%build\dlss5_feed_embedded.dll" "%ROOT%third_party\dlss5-feeder\src\dlss5-feed.cpp" ^
+  "%ROOT%build\minhook-api\src\buffer.c" "%ROOT%build\minhook-api\src\hook.c" "%ROOT%build\minhook-api\src\trampoline.c" "%ROOT%build\minhook-api\src\hde\hde64.c" ^
+  /link /BASE:0x180000000 /DYNAMICBASE /INCREMENTAL:NO /IMPLIB:"%ROOT%build\dlss5_feed_embedded.lib" "%ROOT%build\dlss-sdk-api\lib\Windows_x86_64\x64\nvsdk_ngx_d.lib" version.lib kernel32.lib user32.lib advapi32.lib ole32.lib || exit /b 1
+)
 python "%ROOT%tools\patch_v6_addon.py" --base "%ROOT%updated-official-renodx-dlss.addon64" ^
  --embedded "%ROOT%build\neural_resolution_dx11_embedded.dll" --map "%ROOT%build\neural_resolution_dx11.map" ^
- --section-name .nr-dx11 --screenshot-capture %NR_PATCH_FLAGS% --output "%NR_OUTPUT%" || exit /b 1
+ --section-name .nr-dx11 --screenshot-capture %NR_FEEDER_PATCH% %NR_PATCH_FLAGS% --output "%NR_OUTPUT%" || exit /b 1
 python "%ROOT%tools\validate_v6_addon.py" --base "%ROOT%updated-official-renodx-dlss.addon64" ^
  --addon "%NR_OUTPUT%" --version V6.6 --experimental-dx11 --screenshot-capture %NR_VALIDATION_FLAGS% || exit /b 1
 if /i "%~1"=="vulkan" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
@@ -232,6 +253,7 @@ if /i "%~1"=="startup-history-preview" call "%ROOT%scripts\test\test-vulkan-expo
 if /i "%~1"=="manager-release-1.0.9" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.1.0" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="manager-release-1.1.1" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
+if /i "%~1"=="integrated-feeder-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 if /i "%~1"=="vram-warning-preview" call "%ROOT%scripts\test\test-vulkan-export-lookup.cmd" || exit /b 1
 copy /y "%ROOT%build\minhook-api\LICENSE.txt" "%ROOT%build\dx11-experimental-minhook-LICENSE.txt" >nul || exit /b 1
 endlocal

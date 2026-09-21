@@ -236,6 +236,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--embedded", type=Path, required=True)
+    parser.add_argument("--feeder-embedded", type=Path)
     parser.add_argument("--map", dest="map_file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--screenshot-capture", action="store_true")
@@ -256,6 +257,9 @@ def main() -> None:
     embedded = PeImage(bytearray(args.embedded.read_bytes()))
     if embedded.image_base != base.image_base:
         raise SystemExit("embedded and official preferred image bases differ")
+    feeder = PeImage(bytearray(args.feeder_embedded.read_bytes())) if args.feeder_embedded else None
+    if feeder is not None and feeder.image_base != base.image_base:
+        raise SystemExit("feeder and official preferred image bases differ")
     new_rva = base.next_section_rva()
     shift = new_rva - EMBEDDED_FIRST_RVA
 
@@ -267,6 +271,23 @@ def main() -> None:
         vsize, rva, raw_size, raw, _, _ = embedded.section(index)
         destination = rva - EMBEDDED_FIRST_RVA
         payload[destination:destination + raw_size] = embedded.data[raw:raw + raw_size]
+
+    image_specs = [(embedded, shift, 0, "embedded")]
+    feeder_runtime_entry = None
+    if feeder is not None:
+        feeder_first_rva = align(new_rva + len(payload), base.section_alignment)
+        feeder_shift = feeder_first_rva - EMBEDDED_FIRST_RVA
+        feeder_payload_offset = feeder_first_rva - new_rva
+        feeder_mapped_end = max(
+            section[1] + max(section[0], section[2])
+            for section in (feeder.section(i) for i in range(feeder.section_count)))
+        payload.extend(b"\0" * (feeder_payload_offset + feeder_mapped_end - EMBEDDED_FIRST_RVA - len(payload)))
+        for index in range(feeder.section_count):
+            _, rva, raw_size, raw, _, _ = feeder.section(index)
+            destination = feeder_payload_offset + rva - EMBEDDED_FIRST_RVA
+            payload[destination:destination + raw_size] = feeder.data[raw:raw + raw_size]
+        image_specs.append((feeder, feeder_shift, feeder_payload_offset, "feeder"))
+        feeder_runtime_entry = struct.unpack_from("<I", feeder.data, feeder.optional + 16)[0] + feeder_shift
 
     # Keep the official config/preset identifier untouched. Only redirect the
     # exported NAME pointer to a display string in the injected section.
@@ -281,39 +302,43 @@ def main() -> None:
         raise ValueError("official addon NAME pointer is not covered by a DIR64 relocation")
     display_name_rva = append_blob(payload, new_rva, DISPLAY_ADDON_NAME, 1)
 
-    # Fix every absolute VA in the embedded component and retain its relocation
+    # Fix every absolute VA in each embedded component and retain its relocation
     # records at the uniformly shifted pages for normal ASLR processing.
-    embedded_relocs = relocation_blocks(embedded)
-    for page, entries in embedded_relocs:
-        for entry in entries:
-            kind, within_page = entry >> 12, entry & 0xFFF
-            target_rva = page + within_page
-            target_offset = target_rva - EMBEDDED_FIRST_RVA
-            if kind == 10:
-                value = struct.unpack_from("<Q", payload, target_offset)[0]
-                struct.pack_into("<Q", payload, target_offset, value + shift)
-            elif kind not in (0,):
-                raise ValueError(f"unsupported embedded relocation type {kind}")
+    image_relocs = []
+    for image, image_shift, payload_offset, label in image_specs:
+        relocs = relocation_blocks(image)
+        image_relocs.append((relocs, image_shift))
+        for page, entries in relocs:
+            for entry in entries:
+                kind, within_page = entry >> 12, entry & 0xFFF
+                target_rva = page + within_page
+                target_offset = payload_offset + target_rva - EMBEDDED_FIRST_RVA
+                if kind == 10:
+                    value = struct.unpack_from("<Q", payload, target_offset)[0]
+                    struct.pack_into("<Q", payload, target_offset, value + image_shift)
+                elif kind not in (0,):
+                    raise ValueError(f"unsupported {label} relocation type {kind}")
 
     # Point both import lookup and address thunks at the shifted name records.
     adjusted_imports = []
-    patched_thunks: set[int] = set()
-    for original_first, stamp, chain, name, first in iter_import_descriptors(embedded):
-        for thunk_rva in {original_first, first}:
-            if thunk_rva == 0 or thunk_rva in patched_thunks:
-                continue
-            patched_thunks.add(thunk_rva)
-            cursor = thunk_rva - EMBEDDED_FIRST_RVA
-            while True:
-                value = struct.unpack_from("<Q", payload, cursor)[0]
-                if value == 0:
-                    break
-                if value & (1 << 63) == 0:
-                    struct.pack_into("<Q", payload, cursor, value + shift)
-                cursor += 8
-        adjusted_imports.append((
-            original_first + shift if original_first else 0,
-            stamp, chain, name + shift, first + shift))
+    for image, image_shift, payload_offset, _ in image_specs:
+        patched_thunks: set[int] = set()
+        for original_first, stamp, chain, name, first in iter_import_descriptors(image):
+            for thunk_rva in {original_first, first}:
+                if thunk_rva == 0 or thunk_rva in patched_thunks:
+                    continue
+                patched_thunks.add(thunk_rva)
+                cursor = payload_offset + thunk_rva - EMBEDDED_FIRST_RVA
+                while True:
+                    value = struct.unpack_from("<Q", payload, cursor)[0]
+                    if value == 0:
+                        break
+                    if value & (1 << 63) == 0:
+                        struct.pack_into("<Q", payload, cursor, value + image_shift)
+                    cursor += 8
+            adjusted_imports.append((
+                original_first + image_shift if original_first else 0,
+                stamp, chain, name + image_shift, first + image_shift))
 
     base_imports = list(iter_import_descriptors(base))
     import_blob = bytearray()
@@ -323,42 +348,47 @@ def main() -> None:
     imports_rva = append_blob(payload, new_rva, import_blob, 8)
 
     all_relocs = relocation_blocks(base)
-    all_relocs.extend((page + shift, entries) for page, entries in embedded_relocs)
+    for relocs, image_shift in image_relocs:
+        all_relocs.extend((page + image_shift, entries) for page, entries in relocs)
     reloc_blob = encode_relocations(all_relocs)
     relocs_rva = append_blob(payload, new_rva, reloc_blob, 8)
 
     base_exception_rva, base_exception_size = base.directory(3)
-    embedded_exception_rva, embedded_exception_size = embedded.directory(3)
-    embedded_exception_offset = embedded.rva_to_offset(embedded_exception_rva)
-
-    # x64 unwind records store handler/chained-function RVAs outside the .pdata
-    # table. Shift those embedded RVAs too so stack unwinding remains valid.
-    patched_unwind_records: set[int] = set()
-    for offset in range(0, embedded_exception_size, 12):
-        _, _, unwind = struct.unpack_from("<III", embedded.data, embedded_exception_offset + offset)
-        unwind &= ~3
-        if unwind == 0 or unwind in patched_unwind_records:
-            continue
-        patched_unwind_records.add(unwind)
-        unwind_offset = unwind - EMBEDDED_FIRST_RVA
-        version_flags = payload[unwind_offset]
-        flags = version_flags >> 3
-        code_count = payload[unwind_offset + 2]
-        trailer = unwind_offset + 4 + align(code_count * 2, 4)
-        if flags & 4:  # UNW_FLAG_CHAININFO
-            for field_offset in (0, 4, 8):
-                value = struct.unpack_from("<I", payload, trailer + field_offset)[0]
-                struct.pack_into("<I", payload, trailer + field_offset, value + shift)
-        elif flags & 3:  # UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER
-            value = struct.unpack_from("<I", payload, trailer)[0]
-            struct.pack_into("<I", payload, trailer, value + shift)
-
     exception_blob = bytearray(base.data[
         base.rva_to_offset(base_exception_rva):
         base.rva_to_offset(base_exception_rva) + base_exception_size])
-    for offset in range(0, embedded_exception_size, 12):
-        begin, end, unwind = struct.unpack_from("<III", embedded.data, embedded_exception_offset + offset)
-        exception_blob.extend(struct.pack("<III", begin + shift, end + shift, unwind + shift))
+    for image, image_shift, payload_offset, _ in image_specs:
+        image_exception_rva, image_exception_size = image.directory(3)
+        if image_exception_rva == 0 or image_exception_size == 0:
+            continue
+        image_exception_offset = image.rva_to_offset(image_exception_rva)
+
+        # x64 unwind records store handler/chained-function RVAs outside the .pdata
+        # table. Shift those embedded RVAs too so stack unwinding remains valid.
+        patched_unwind_records: set[int] = set()
+        for offset in range(0, image_exception_size, 12):
+            _, _, unwind = struct.unpack_from("<III", image.data, image_exception_offset + offset)
+            unwind &= ~3
+            if unwind == 0 or unwind in patched_unwind_records:
+                continue
+            patched_unwind_records.add(unwind)
+            unwind_offset = payload_offset + unwind - EMBEDDED_FIRST_RVA
+            version_flags = payload[unwind_offset]
+            flags = version_flags >> 3
+            code_count = payload[unwind_offset + 2]
+            trailer = unwind_offset + 4 + align(code_count * 2, 4)
+            if flags & 4:  # UNW_FLAG_CHAININFO
+                for field_offset in (0, 4, 8):
+                    value = struct.unpack_from("<I", payload, trailer + field_offset)[0]
+                    struct.pack_into("<I", payload, trailer + field_offset, value + image_shift)
+            elif flags & 3:  # UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER
+                value = struct.unpack_from("<I", payload, trailer)[0]
+                struct.pack_into("<I", payload, trailer, value + image_shift)
+
+        for offset in range(0, image_exception_size, 12):
+            begin, end, unwind = struct.unpack_from("<III", image.data, image_exception_offset + offset)
+            exception_blob.extend(struct.pack(
+                "<III", begin + image_shift, end + image_shift, unwind + image_shift))
     exceptions_rva = append_blob(payload, new_rva, exception_blob, 4)
 
     if args.addon_build is not None:
@@ -389,12 +419,20 @@ def main() -> None:
         assert args.screenshot_capture
         patches = patches | INPUT_TRACE_PATCHES
     required = {name for _, name, _ in patches.values()} | {"combined_entry"}
+    if feeder_runtime_entry is not None:
+        required.add("feeder_entry_rva")
     missing = sorted(required - symbols.keys())
     if missing:
         raise SystemExit(f"missing embedded symbol(s): {', '.join(missing)}")
 
     def injected(name: str) -> int:
         return symbols[name] + shift
+
+    if feeder_runtime_entry is not None:
+        pointer_offset = base.rva_to_offset(injected("feeder_entry_rva"))
+        if struct.unpack_from("<I", base.data, pointer_offset)[0] != 0:
+            raise ValueError("embedded feeder entry pointer was not zero")
+        struct.pack_into("<I", base.data, pointer_offset, feeder_runtime_entry)
 
     for site, (expected, symbol, kind) in patches.items():
         opcode = b"\xE8" if kind.startswith("call") else b"\xE9"
@@ -411,6 +449,8 @@ def main() -> None:
     args.output.write_bytes(base.data)
     print(f"wrote {args.output}")
     print(f"embedded shift=0x{shift:X}, section RVA=0x{new_rva:X}")
+    if feeder_runtime_entry is not None:
+        print(f"feeder entry=0x{feeder_runtime_entry:X}")
     print(f"imports=0x{imports_rva:X}, relocations=0x{relocs_rva:X}, exceptions=0x{exceptions_rva:X}")
     print(f"sha256={hashlib.sha256(base.data).hexdigest()}")
 
